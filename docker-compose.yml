@@ -1,0 +1,118 @@
+services:
+
+  # ── Keycloak — Identity Provider ─────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_DB: dev-file
+      KC_HEALTH_ENABLED: "true"
+      KC_LOG_LEVEL: INFO
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "18080:8080"
+    healthcheck:
+      # Checks the master realm — available once KC is fully initialized
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - basis
+
+  # ── Mosquitto — MQTT Broker ───────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    ports:
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # MQTT over WebSocket
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/#' -C 1 -W 3 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - basis
+
+  # ── FastAPI — Backend API ─────────────────────────────────────────────────
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    environment:
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
+      KEYCLOAK_EXTERNAL_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:18080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-basis}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-basis-api}
+      MQTT_BROKER_HOST: ${MQTT_BROKER_HOST:-mosquitto}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+    volumes:
+      # Mount source for hot reload — Dockerfile installs deps at build time
+      - ./services/api:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - basis
+
+  # ── React + Vite — Frontend ───────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-http://localhost:18080}
+      VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-basis}
+      VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-basis-frontend}
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    volumes:
+      - ./services/frontend:/app
+      # Preserve container's node_modules — prevents host mount from overwriting it
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    networks:
+      - basis
+
+  # ── OT Simulator — Fake HVAC & Sensor Data ───────────────────────────────
+  simulator:
+    build:
+      context: ./services/simulator
+      dockerfile: Dockerfile
+    environment:
+      MQTT_BROKER_HOST: ${SIMULATOR_MQTT_HOST:-mosquitto}
+      MQTT_BROKER_PORT: ${SIMULATOR_MQTT_PORT:-1883}
+      HEARTBEAT_INTERVAL: ${SIMULATOR_HEARTBEAT_INTERVAL:-10}
+    volumes:
+      - ./services/simulator:/app
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - basis
+    restart: on-failure
+
+# ── Named Volumes ─────────────────────────────────────────────────────────────
+volumes:
+  mosquitto_data:
+  mosquitto_logs:
+  frontend_node_modules:
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  basis:
+    driver: bridge

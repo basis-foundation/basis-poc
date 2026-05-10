@@ -1,0 +1,149 @@
+{
+  "id": "basis",
+  "realm": "basis",
+  "displayName": "Basis Foundation",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567891",
+        "name": "viewer",
+        "description": "Read-only access to telemetry and dashboards",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "basis"
+      },
+      {
+        "id": "b2c3d4e5-f6a7-8901-bcde-f12345678902",
+        "name": "operator",
+        "description": "Can send control commands and view telemetry",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "basis"
+      },
+      {
+        "id": "c3d4e5f6-a7b8-9012-cdef-123456789013",
+        "name": "admin",
+        "description": "Full access including audit logs and system configuration",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "basis"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "id": "d4e5f6a7-b8c9-0123-def0-234567890124",
+      "clientId": "basis-frontend",
+      "name": "Basis Frontend",
+      "description": "React SPA — public OIDC client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost:5173"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
+    },
+    {
+      "id": "e5f6a7b8-c9d0-1234-ef01-345678901235",
+      "clientId": "basis-api",
+      "name": "Basis API",
+      "description": "FastAPI backend — bearer-only client",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "attributes": {}
+    }
+  ],
+  "users": [
+    {
+      "id": "f6a7b8c9-d0e1-2345-f012-456789012346",
+      "username": "alice",
+      "email": "alice@basis.local",
+      "firstName": "Alice",
+      "lastName": "Viewer",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["viewer"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "a7b8c9d0-e1f2-3456-0123-567890123457",
+      "username": "bob",
+      "email": "bob@basis.local",
+      "firstName": "Bob",
+      "lastName": "Operator",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["operator"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "b8c9d0e1-f2a3-4567-1234-678901234568",
+      "username": "carol",
+      "email": "carol@basis.local",
+      "firstName": "Carol",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "realmRoles": ["admin"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo123",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}
