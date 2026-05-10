@@ -1,9 +1,10 @@
 """
 Basis Foundation — HVAC Control Endpoints
 Stage 4: Operator/admin-only setpoint commands published to MQTT.
+Stage 5: Command dispatch outcomes recorded to audit log.
 
 Authorization:
-  - viewer  → 403 Forbidden
+  - viewer  → 403 Forbidden (recorded by require_role in auth.py)
   - operator → allowed
   - admin   → allowed
 
@@ -11,6 +12,12 @@ Validation (three layers):
   1. Pydantic field constraints  — type, ge/le bounds → 422 Unprocessable Entity
   2. Zone allow-list             — unknown zones → 404
   3. Simulator validates again   — belt-and-suspenders against broker replay attacks
+
+Audit call sites in this module:
+  - command_dispatch/allowed  — MQTT publish succeeded
+  - command_dispatch/error    — MQTT publish failed (503 returned to caller)
+Note: the api_access audit record (role check) is written by require_role()
+in auth.py before this handler is reached.
 """
 
 from datetime import datetime, timezone
@@ -19,7 +26,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from pydantic import BaseModel, Field
 
+from audit import audit_logger
 from auth import require_role, get_roles
+from domain.events import AuditEvent
 from mqtt_publisher import publish_command
 
 router = APIRouter(prefix="/api/controls", tags=["controls"])
@@ -84,9 +93,12 @@ async def set_hvac_setpoint(
             detail=f"Unknown zone '{zone}'. Valid zones: {sorted(VALID_ZONES)}",
         )
 
-    username = user.get("preferred_username", "unknown")
-    now      = datetime.now(timezone.utc).isoformat()
-    topic    = f"basis/hvac/{zone}/command"
+    username    = user.get("preferred_username", "unknown")
+    subject_id  = user.get("sub", "unknown")
+    user_roles  = get_roles(user)
+    now         = datetime.now(timezone.utc).isoformat()
+    topic       = f"basis/hvac/{zone}/command"
+    resource_id = f"hvac:{zone}"
 
     mqtt_payload = {
         "target_temperature": command.target_temperature,
@@ -98,10 +110,32 @@ async def set_hvac_setpoint(
     try:
         await publish_command(topic, mqtt_payload)
     except RuntimeError as exc:
+        await audit_logger.record(AuditEvent(
+            subject_id=subject_id,
+            subject_name=username,
+            subject_roles=user_roles,
+            action="command_dispatch",
+            resource_id=resource_id,
+            endpoint=f"POST /api/controls/hvac/{zone}/setpoint",
+            outcome="error",
+            reason=str(exc),
+            detail={"target_temperature": command.target_temperature},
+        ))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Command could not be delivered: {exc}",
         )
+
+    await audit_logger.record(AuditEvent(
+        subject_id=subject_id,
+        subject_name=username,
+        subject_roles=user_roles,
+        action="command_dispatch",
+        resource_id=resource_id,
+        endpoint=f"POST /api/controls/hvac/{zone}/setpoint",
+        outcome="allowed",
+        detail={"target_temperature": command.target_temperature},
+    ))
 
     return SetpointResponse(
         status="command_sent",

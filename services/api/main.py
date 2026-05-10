@@ -1,6 +1,10 @@
 """
 Basis Foundation — FastAPI Backend
-Stage 4: Identity-aware HVAC control commands added.
+Stage 5: Audit logging infrastructure added (structural commit).
+         AuditEvent model, AuditLogger, StdoutAuditStore.
+         Audit records written to log stream for all authorization decisions
+         and command dispatch outcomes.
+         /api/audit stub endpoint added (returns 501 until Stage 5b).
 """
 
 import asyncio
@@ -12,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.protected import router as protected_router
 from routers.telemetry import router as telemetry_router
 from routers.controls  import router as controls_router
+from routers.audit     import router as audit_router
 from mqtt_client import mqtt_listener
 
 logging.basicConfig(
@@ -33,10 +38,11 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
-        "**Stage 4**: Role-gated HVAC control commands via MQTT.\n\n"
+        "**Stage 5**: Audit logging infrastructure. All authorization decisions and "
+        "command dispatch outcomes are recorded. `/api/audit` stub added (501 until Stage 5b).\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.4.0",
+    version="0.5.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -53,6 +59,7 @@ app.add_middleware(
 app.include_router(protected_router)
 app.include_router(telemetry_router)
 app.include_router(controls_router)
+app.include_router(audit_router)
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 _mqtt_task: asyncio.Task | None = None
@@ -61,7 +68,7 @@ _mqtt_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def startup() -> None:
     global _mqtt_task
-    log.info("Basis API v0.4.0 starting up (Stage 4)")
+    log.info("Basis API v0.5.0 starting up (Stage 5 — audit logging)")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
@@ -85,7 +92,7 @@ async def shutdown() -> None:
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.4.0", "stage": 4, "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.5.0", "stage": 5, "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -94,7 +101,7 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -107,11 +114,12 @@ def config():
         "keycloak_realm":        KEYCLOAK_REALM,
         "mqtt_broker_host":      MQTT_BROKER_HOST,
         "mqtt_broker_port":      MQTT_BROKER_PORT,
-        "stage": 4,
+        "stage": 5,
         "features": {
-            "auth":      True,
-            "telemetry": True,
-            "controls":  True,
-            "audit":     False,  # Stage 5
+            "auth":         True,
+            "telemetry":    True,
+            "controls":     True,
+            "audit_log":    True,   # stdout — docker compose logs api | grep AUDIT
+            "audit_api":    False,  # /api/audit returns 501 until Stage 5b
         },
     }

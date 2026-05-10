@@ -9,6 +9,7 @@ Flow:
   4. Decode & validate: signature, expiry, issuer
   5. Extract realm_access.roles from payload
   6. Enforce role requirements via require_role() dependency factory
+  7. Record authorization decision to audit log (Stage 5)
 """
 
 import os
@@ -17,9 +18,12 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
+
+from audit import audit_logger
+from domain.events import AuditEvent
 
 log = logging.getLogger("basis.auth")
 
@@ -192,22 +196,51 @@ def require_role(*roles: str):
 
     Returns HTTP 403 if the user is authenticated but lacks the required role.
     Returns HTTP 401 if no valid token is provided at all.
+
+    Stage 5: Records every authorization decision (allowed and denied) to the
+    audit log. The audit call is non-fatal — a logging failure will never
+    affect the HTTP response.
     """
-    async def _enforce(user: dict = Depends(get_current_user)) -> dict:
+    async def _enforce(
+        request: Request,
+        user: dict = Depends(get_current_user),
+    ) -> dict:
+        username   = user.get("preferred_username", "unknown")
+        subject_id = user.get("sub", "unknown")
+        user_roles = get_roles(user)
+        endpoint   = f"{request.method} {request.url.path}"
+
         if not has_any_role(user, *roles):
-            username = user.get("preferred_username", "unknown")
-            user_roles = get_roles(user)
+            reason = (
+                f"Access denied. Required role: {' or '.join(roles)}. "
+                f"Your roles: {user_roles or ['(none)']}"
+            )
             log.warning(
                 "403 for user='%s' roles=%s — required one of %s",
                 username, user_roles, list(roles),
             )
+            await audit_logger.record(AuditEvent(
+                subject_id=subject_id,
+                subject_name=username,
+                subject_roles=user_roles,
+                action="api_access",
+                endpoint=endpoint,
+                outcome="denied",
+                reason=reason,
+            ))
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Access denied. Required role: {' or '.join(roles)}. "
-                    f"Your roles: {user_roles or ['(none)']}"
-                ),
+                detail=reason,
             )
+
+        await audit_logger.record(AuditEvent(
+            subject_id=subject_id,
+            subject_name=username,
+            subject_roles=user_roles,
+            action="api_access",
+            endpoint=endpoint,
+            outcome="allowed",
+        ))
         return user
 
     return _enforce
