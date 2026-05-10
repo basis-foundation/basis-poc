@@ -212,6 +212,10 @@ sequenceDiagram
 
 The API maintains an in-memory snapshot (topic → latest payload). A client connecting mid-session receives a full snapshot immediately, then incremental updates.
 
+![Live telemetry dashboard showing HVAC temperature, CO₂ air quality, and occupancy cards receiving data over WebSocket](docs/screenshots/telemetry.png)
+
+*The three telemetry cards receiving live data. HVAC shows current temperature, setpoint, mode (heating/cooling/idle), and fan speed. CO₂ shows parts-per-million with a color-coded status bar. Occupancy shows the current headcount. All three update in place as WebSocket messages arrive — no page reload required.*
+
 ---
 
 ## Operational Command Flow
