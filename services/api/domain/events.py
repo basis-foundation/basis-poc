@@ -1,13 +1,11 @@
 """
 BASIS — Domain Event Models
 Stage 5: AuditEvent introduced.
-
-Future stages will add TelemetryEvent (Stage 7b) and CommandEvent (Stage 7b)
-to this module as the normalized internal event model grows.
+Stage 7: subject_type field added to AuditEvent — populated from Subject.type.value.
 
 Design constraint: this module has NO imports from other BASIS modules.
 It is the base of the import graph. Everything else may import from here;
-nothing here imports from adapters, routers, auth, or audit.
+nothing here imports from adapters, routers, auth, audit, or policy.
 """
 
 import uuid
@@ -38,6 +36,7 @@ class AuditEvent(BaseModel):
     # ── Subject — who performed the action ────────────────────────────────────
     subject_id:    str        # JWT sub claim (stable across sessions)
     subject_name:  str        # preferred_username (human-readable)
+    subject_type:  str = "human"  # SubjectType value — "human" until Stage 7 non-human paths
     subject_roles: list[str]  # realm_access.roles at time of request
 
     # ── Action — what they did ────────────────────────────────────────────────

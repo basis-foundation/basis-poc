@@ -5,6 +5,15 @@ Stage 6: MQTT security — adapters/ package introduced.
          mqtt_publisher.py → adapters/mqtt/publisher.py
          MQTT connections now use per-service credentials (MQTT_USERNAME/MQTT_PASSWORD).
          Mosquitto anonymous access disabled.
+Stage 7: Identity-aware policy architecture.
+         domain/subject.py  — Subject model + SubjectType enum (HUMAN, DEVICE, SERVICE, GATEWAY, AGENT)
+         policy/engine.py   — PolicyEngine: chain-of-responsibility authorization evaluation
+         policy/rbac.py     — RoleBasedPolicy: centralizes the role→action mapping
+         policy/actions.py  — Named action constants (write:hvac:setpoint, read:audit:log, ...)
+         auth.py            — require_action() replaces require_role() in all routers;
+                              subject_from_jwt() translates JWT → Subject at the auth boundary.
+         All routers now receive typed Subject objects instead of raw JWT dicts.
+         External API behavior is identical. Internal authorization path is formalized.
 """
 
 import asyncio
@@ -38,11 +47,13 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
-        "**Stage 6**: MQTT security. Authenticated broker connections. "
-        "Audit logging from Stage 5 preserved.\n\n"
+        "**Stage 7**: Policy architecture. JWT claims resolve to typed `Subject` objects. "
+        "All authorization decisions flow through `PolicyEngine` → `RoleBasedPolicy`. "
+        "Named actions replace raw role checks at every endpoint. "
+        "External behavior identical to Stage 6.\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.6.0",
+    version="0.7.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -68,7 +79,7 @@ _mqtt_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def startup() -> None:
     global _mqtt_task
-    log.info("Basis API v0.6.0 starting up (Stage 6 — MQTT security)")
+    log.info("Basis API v0.7.0 starting up (Stage 7 — identity-aware policy architecture)")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
@@ -92,7 +103,7 @@ async def shutdown() -> None:
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.6.0", "stage": 6, "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.7.0", "stage": 7, "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -101,7 +112,7 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.6.0",
+        "version": "0.7.0",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -114,7 +125,7 @@ def config():
         "keycloak_realm":        KEYCLOAK_REALM,
         "mqtt_broker_host":      MQTT_BROKER_HOST,
         "mqtt_broker_port":      MQTT_BROKER_PORT,
-        "stage": 6,
+        "stage": 7,
         "features": {
             "auth":             True,
             "telemetry":        True,
@@ -122,5 +133,7 @@ def config():
             "audit_log":        True,
             "audit_api":        False,  # returns 501 until Stage 5b
             "mqtt_auth":        True,   # broker requires credentials
+            "policy_engine":    True,   # PolicyEngine + RoleBasedPolicy active
+            "subject_model":    True,   # JWT → Subject resolution at auth boundary
         },
     }

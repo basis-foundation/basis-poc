@@ -1,16 +1,18 @@
 """
 BASIS — Audit Store
 Stage 5: StdoutAuditStore — writes structured audit lines to the uvicorn logger.
+Stage 7: action column widened; action names are now semantic policy strings.
 
 Stage 5b will add SqliteAuditStore. The interface is defined here so that
 AuditLogger can swap backends without any change to call sites.
 
 The stdout format is designed to be grep-friendly in docker compose logs:
 
-  AUDIT outcome=allowed  subject=bob    action=api_access        endpoint=GET /api/operator
-  AUDIT outcome=denied   subject=alice  action=api_access        endpoint=GET /api/operator
-  AUDIT outcome=allowed  subject=bob    action=command_dispatch  resource=hvac:main
-  AUDIT outcome=error    subject=bob    action=command_dispatch  resource=hvac:main  reason=...
+  AUDIT  outcome=allowed  subject=bob    action=read:api:operator             endpoint=GET /api/operator
+  AUDIT  outcome=denied   subject=alice  action=read:api:operator             endpoint=GET /api/operator
+  AUDIT  outcome=allowed  subject=bob    action=write:hvac:setpoint           endpoint=POST /api/controls/hvac/main/setpoint
+  AUDIT  outcome=allowed  subject=bob    action=command_dispatch              resource=hvac:main
+  AUDIT  outcome=error    subject=bob    action=command_dispatch              resource=hvac:main  reason=...
 """
 
 import json
@@ -46,10 +48,17 @@ class StdoutAuditStore(AuditStore):
     async def write(self, event: AuditEvent) -> None:
         # Build a compact key=value line for easy grepping.
         # Pad field values so columns align in typical log viewers.
+        # subject_type is omitted when "human" (the common case) to keep lines short;
+        # it is included for non-human subjects to make device/service actions visible.
+        subject_label = (
+            f"{event.subject_name}({event.subject_type})"
+            if event.subject_type != "human"
+            else event.subject_name
+        )
         parts = [
             f"outcome={event.outcome:<7}",
-            f"subject={event.subject_name:<12}",
-            f"action={event.action:<20}",
+            f"subject={subject_label:<12}",
+            f"action={event.action:<28}",
         ]
 
         if event.resource_id:
