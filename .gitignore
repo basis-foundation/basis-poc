@@ -1,32 +1,59 @@
-# Environment
+# ── Environment ───────────────────────────────────────────────────────────────
 .env
+.env.local
+.env.*.local
 
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 .venv/
 venv/
 *.egg-info/
-
-# Node
-node_modules/
 dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
 .vite/
 
-# SQLite
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Databases ─────────────────────────────────────────────────────────────────
 *.db
 *.sqlite3
+data/
 
-# Docker volumes (if accidentally created locally)
+# ── Certificates and private keys ─────────────────────────────────────────────
+# When TLS is added (Stage 9), generated certs go in infra/certs/ and must
+# never be committed. These patterns provide the safety net.
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*.jks
+infra/certs/
+
+# ── Docker volumes (if accidentally created on host) ──────────────────────────
 mosquitto-data/
 mosquitto-logs/
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Editor
+# ── Editor ────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
+*.swo
