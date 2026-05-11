@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from audit import audit_logger
 from auth import require_role, get_roles
 from domain.events import AuditEvent
-from mqtt_publisher import publish_command
+from adapters.mqtt.publisher import publish_command
 
 router = APIRouter(prefix="/api/controls", tags=["controls"])
 

@@ -188,7 +188,7 @@ export default function App() {
         <h1 style={{ fontSize: '1rem', fontWeight: 700, color: C.text, margin: 0 }}>
           Basis Foundation
         </h1>
-        <span style={{ fontSize: '0.75rem', color: C.muted }}>Stage 4 — Identity-Aware Controls</span>
+        <span style={{ fontSize: '0.75rem', color: C.muted }}>Stage 5 — Audit Logging</span>
         <div style={{ flex: 1 }} />
         <div style={{
           display: 'flex', alignItems: 'center', gap: '0.5rem',

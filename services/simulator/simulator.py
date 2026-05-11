@@ -1,6 +1,6 @@
 """
 Basis Foundation — OT Device Simulator
-Stage 4: Subscribes to HVAC command topics and applies setpoint changes.
+Stage 6: Authenticated MQTT connections (MQTT_USERNAME / MQTT_PASSWORD).
 
 Topics published:
   basis/hvac/main/telemetry         every 3 seconds
@@ -43,6 +43,8 @@ log = logging.getLogger("basis.simulator")
 # ── Configuration ─────────────────────────────────────────────────────────────
 BROKER_HOST          = os.getenv("MQTT_BROKER_HOST", "mosquitto")
 BROKER_PORT          = int(os.getenv("MQTT_BROKER_PORT", "1883"))
+MQTT_USERNAME        = os.getenv("MQTT_USERNAME", "")
+MQTT_PASSWORD        = os.getenv("MQTT_PASSWORD", "")
 TICK_INTERVAL        = 3    # seconds per HVAC tick
 CO2_TICK_EVERY       = 2    # publish CO2 every N ticks
 OCCUPANCY_TICK_EVERY = 4    # publish occupancy every N ticks
@@ -202,16 +204,30 @@ def _publish(client: mqtt.Client, topic: str, payload: dict, qos: int = 0) -> No
         log.warning("Publish failed on %s (rc=%d)", topic, result.rc)
 
 
+_RC_MESSAGES = {
+    1: "incorrect protocol version",
+    2: "invalid client identifier",
+    3: "broker unavailable",
+    4: "bad username or password — check MQTT_USERNAME and MQTT_PASSWORD env vars",
+    5: "not authorized — client not permitted by broker ACL",
+}
+
+
 def on_connect(client: mqtt.Client, userdata: dict, flags, rc: int) -> None:
     if rc == 0:
-        log.info("Connected to MQTT broker at %s:%d", BROKER_HOST, BROKER_PORT)
+        auth_desc = f"user={MQTT_USERNAME}" if MQTT_USERNAME else "anonymous"
+        log.info(
+            "Connected to MQTT broker at %s:%d  auth=%s",
+            BROKER_HOST, BROKER_PORT, auth_desc,
+        )
         client.publish(TOPIC_STATUS, "online", qos=1, retain=True)
         # Subscribe to command topics — must happen in on_connect so it
         # re-subscribes automatically after any broker reconnect.
         client.subscribe(TOPIC_CMD_HVAC, qos=1)
         log.info("Subscribed to command topic: %s", TOPIC_CMD_HVAC)
     else:
-        log.error("MQTT connection failed — rc=%d", rc)
+        reason = _RC_MESSAGES.get(rc, f"unknown error code {rc}")
+        log.error("MQTT connection refused (rc=%d): %s", rc, reason)
 
 
 def on_disconnect(client: mqtt.Client, userdata, rc: int) -> None:
@@ -265,6 +281,17 @@ def main() -> None:
     client.on_disconnect = on_disconnect
     client.on_message    = on_message
     client.will_set(TOPIC_STATUS, "offline", qos=1, retain=True)
+
+    # Stage 6: authenticate to broker if credentials are provided
+    if MQTT_USERNAME:
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+        log.info("MQTT simulator identity: username=%s  broker=%s:%d",
+                 MQTT_USERNAME, BROKER_HOST, BROKER_PORT)
+    else:
+        log.warning(
+            "MQTT simulator running WITHOUT credentials (anonymous). "
+            "Set MQTT_USERNAME and MQTT_PASSWORD to enable authenticated connections."
+        )
 
     connect_with_retry(client)
     client.loop_start()

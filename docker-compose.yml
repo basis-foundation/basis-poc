@@ -25,17 +25,21 @@ services:
       - basis
 
   # ── Mosquitto — MQTT Broker ───────────────────────────────────────────────
+  # Stage 6: anonymous access disabled. Clients must authenticate.
+  # Password file is generated via: make mqtt-passwd (see README for full command)
   mosquitto:
     image: eclipse-mosquitto:2.0
     volumes:
       - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./infra/mosquitto/passwd:/mosquitto/config/passwd:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_logs:/mosquitto/log
     ports:
       - "1883:1883"   # MQTT
       - "9001:9001"   # MQTT over WebSocket
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/#' -C 1 -W 3 || exit 1"]
+      # Stage 6: healthcheck authenticates as basis-api to verify auth is working
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -u basis-api -P basis-api-secret -t '$$SYS/#' -C 1 -W 3 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -55,6 +59,8 @@ services:
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-basis-api}
       MQTT_BROKER_HOST: ${MQTT_BROKER_HOST:-mosquitto}
       MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_API_USERNAME:-basis-api}
+      MQTT_PASSWORD: ${MQTT_API_PASSWORD:-basis-api-secret}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     volumes:
       # Mount source for hot reload — Dockerfile installs deps at build time
@@ -96,6 +102,8 @@ services:
     environment:
       MQTT_BROKER_HOST: ${SIMULATOR_MQTT_HOST:-mosquitto}
       MQTT_BROKER_PORT: ${SIMULATOR_MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_SIMULATOR_USERNAME:-basis-simulator}
+      MQTT_PASSWORD: ${MQTT_SIMULATOR_PASSWORD:-basis-simulator-secret}
       HEARTBEAT_INTERVAL: ${SIMULATOR_HEARTBEAT_INTERVAL:-10}
     volumes:
       - ./services/simulator:/app
