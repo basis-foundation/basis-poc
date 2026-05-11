@@ -2,7 +2,7 @@
 
 A proof-of-concept demonstrating identity-aware access control applied to building automation and operational technology (OT) systems.
 
-**Current status:** Stage 4 complete — local development environment, authentication, live telemetry, and role-gated operational commands are all functional. This is not a production system.
+**Current status:** Stage 6 complete — local development environment, authentication, live telemetry, role-gated operational commands, audit logging, and MQTT service authentication are all functional. This is not a production system.
 
 ---
 
@@ -88,7 +88,7 @@ Telemetry moves upward: Simulator → Mosquitto → API (subscriber) → WebSock
 
 Commands move downward: Browser → API (role-checked) → Mosquitto → Simulator → physical state change → reflected in next telemetry tick.
 
-The API is the sole trust boundary for commands. The MQTT broker itself is currently unauthenticated — devices are trusted once inside the internal Docker network. Hardening the broker is a planned stage.
+The API is the sole trust boundary for commands. The MQTT broker requires per-service credentials — the API and simulator each authenticate with distinct usernames. Anonymous access is disabled. TLS on the MQTT port is a planned stage.
 
 ---
 
@@ -299,7 +299,7 @@ Three demo users are pre-seeded in Keycloak. All share the password `demo123`.
 
 *Alice (viewer) sees the locked panel. The frontend checks `hasRole('operator') || hasRole('admin')` before rendering the control UI — her `viewer` JWT passes this check as false, so the panel is replaced entirely with an explanation. A direct API call to `/api/controls/hvac/main/setpoint` with her token would return 403.*
 
-The audit log endpoint exists in the role matrix but is not yet implemented. Carol receives a 200 from `/api/admin` today, but that endpoint currently returns a placeholder — it does not yet query a persistent log store.
+The audit log endpoint (`GET /api/audit`) is role-gated to admin and returns a `501` response directing to `docker compose logs api | grep AUDIT`. Audit events are currently written to stdout in a structured single-line format. A queryable persistent store (SQLite) is a planned stage.
 
 ---
 
@@ -345,7 +345,7 @@ Keycloak starts in parallel and takes approximately 60–90 seconds to complete 
 | API docs (Swagger) | http://localhost:8000/docs | Paste a Bearer token to test protected endpoints |
 | Keycloak realm | http://localhost:18080/realms/basis | Realm metadata |
 | Keycloak admin | http://localhost:18080/admin | `admin` / `admin` |
-| MQTT (TCP) | localhost:1883 | `mosquitto_sub -h localhost -p 1883 -t 'basis/#' -v` |
+| MQTT (TCP) | localhost:1883 | Credentials required — see Useful Commands below |
 | MQTT (WebSocket) | localhost:9001 | Available for browser MQTT clients |
 
 ### Useful Commands
@@ -360,8 +360,11 @@ docker compose restart simulator
 # Tail logs for one service
 docker compose logs -f api
 
-# Watch the full MQTT wire
-mosquitto_sub -h localhost -p 1883 -t 'basis/#' -v
+# Watch the full MQTT wire (credentials required — see .env.example for values)
+mosquitto_sub -h localhost -p 1883 -u basis-api -P basis-api-secret -t 'basis/#' -v
+
+# Tail structured audit events from the API log
+docker compose logs -f api | grep AUDIT
 
 # Inspect the WebSocket stream directly
 wscat -c ws://localhost:8000/ws/telemetry
@@ -403,7 +406,20 @@ This is necessary because Keycloak's `iss` claim reflects the hostname the brows
 
 ### Defense in depth on commands
 
-Every command is validated at three independent layers: the frontend (prevents obvious user errors), FastAPI (enforces authorization policy and payload constraints), and the simulator (drops malformed messages regardless of source). The simulator's layer exists to defend against anything that can publish to the MQTT broker directly, which is presently unauthenticated.
+Every command is validated at three independent layers: the frontend (prevents obvious user errors), FastAPI (enforces authorization policy and payload constraints), and the simulator (drops malformed messages regardless of source). The simulator's layer exists to defend against any authenticated MQTT client that can reach the broker directly — broker-level ACLs are not yet enforced.
+
+### MQTT service authentication
+
+The MQTT broker (Mosquitto 2.0) runs with anonymous access disabled. Each service authenticates with a distinct username:
+
+| Service | MQTT identity | ACL intent |
+|---|---|---|
+| API | `basis-api` | Subscribe `basis/#`, publish `basis/hvac/+/command` |
+| Simulator | `basis-simulator` | Publish telemetry topics, subscribe `basis/hvac/+/command` |
+
+Credentials are stored in `infra/mosquitto/passwd` as PBKDF2-SHA512 hashes (`$7$` prefix, Mosquitto 2.0 format). The cleartext values are development-only defaults documented in `.env.example`. The `passwd` file is tracked in the repository so `docker compose up` works without any additional setup for contributors.
+
+This eliminates anonymous MQTT access within the Docker network. TLS on the MQTT port is a planned stage.
 
 ### Tokens in memory only
 
@@ -413,19 +429,20 @@ Every command is validated at three independent layers: the frontend (prevents o
 
 ## Current Limitations
 
-These are known gaps, not bugs. They represent the honest state of a Stage 4 PoC.
+These are known gaps, not bugs. They represent the honest state of a Stage 6 PoC.
 
 **Authentication and authorization**
-- The WebSocket endpoint (`/ws/telemetry`) is currently unauthenticated. Any client that can reach port 8000 can receive telemetry. Stage 5 will add token validation via a query parameter on the WebSocket handshake.
+- The WebSocket endpoint (`/ws/telemetry`) is currently unauthenticated. Any client that can reach port 8000 can receive telemetry. Token validation on the WebSocket handshake is planned for Stage 7.
 - Token expiry is not handled on existing WebSocket connections — if a token expires mid-session, the WebSocket continues to stream until the page is reloaded.
 
 **MQTT security**
-- Mosquitto is configured for anonymous access with no TLS. This is acceptable on a Docker bridge network for local development. It is not acceptable in any networked environment.
-- The simulator and API are trusted purely by virtue of being on the same Docker network. There is no per-client MQTT authentication.
+- Mosquitto requires per-service credentials. Anonymous access is disabled. The API and simulator authenticate as distinct MQTT identities.
+- There is no TLS on the MQTT port. All MQTT traffic is plaintext on the Docker bridge network. This is acceptable for local development but not for any networked environment.
+- There are no per-topic ACLs enforced at the broker level. Any authenticated MQTT client could publish or subscribe to any `basis/#` topic. ACL enforcement is a planned stage.
 
 **Persistence**
 - Keycloak uses an H2 in-memory database (`dev-file` mode). User configuration is lost if the container is replaced without a volume backup. The realm is re-imported from `realm-export.json` on each fresh start.
-- There is no audit log. Commands are logged to stdout only. There is no queryable record of who sent which command.
+- Audit events (authorization decisions and command dispatches) are written to stdout in a structured single-line format. They are not persisted to a queryable store. Retrieve them with `docker compose logs api | grep AUDIT` while the container is running. A SQLite-backed audit store is a planned stage.
 
 **Scope**
 - A single zone (`main`) is simulated. There is no multi-zone, multi-building, or multi-tenant model.
@@ -441,16 +458,16 @@ These are known gaps, not bugs. They represent the honest state of a Stage 4 PoC
 
 ## Roadmap
 
-The following stages are planned but not yet started. This list reflects intended direction, not committed scope.
+Completed stages are marked ✅. Planned stages reflect intended direction, not committed scope.
 
-| Stage | Goal | Key deliverables |
-|---|---|---|
-| **Stage 5** | Audit logging | SQLite audit log via FastAPI middleware. Every command recorded with user, role, timestamp, outcome. `/api/audit` endpoint (admin only). |
-| **Stage 6** | MQTT security | Mosquitto authentication with per-client credentials. TLS on MQTT port. API and simulator use distinct credentials. |
-| **Stage 7** | WebSocket authentication | Token validation on WebSocket handshake. Token expiry handling on live connections. |
-| **Stage 8** | Multi-zone support | Zone registry. Multiple simulated zones. Scoped commands (`basis/hvac/{zone}/command`). Zone-level role grants. |
-| **Stage 9** | Production hardening | Keycloak with PostgreSQL backend. HTTPS via reverse proxy. Production Compose overrides. Secrets management baseline. |
-| **Stage 10** | Real device integration | BACnet/IP or Modbus TCP adapter alongside the simulator. Read real sensor data. Gate real actuator commands behind the same auth layer. |
+| Stage | Goal | Key deliverables | Status |
+|---|---|---|---|
+| **Stage 5** | Audit logging | Structured stdout audit events for authorization decisions and command dispatches. `AuditEvent` domain model. `/api/audit` endpoint (admin only, returns 501 with grep instructions pending a persistent store). | ✅ Complete |
+| **Stage 6** | MQTT security | Mosquitto anonymous access disabled. Per-service credentials (`basis-api`, `basis-simulator`). `adapters/mqtt/` package refactor. | ✅ Complete |
+| **Stage 7** | WebSocket authentication | Token validation on WebSocket handshake. Token expiry handling on live connections. | Planned |
+| **Stage 8** | Multi-zone support | Zone registry. Multiple simulated zones. Scoped commands (`basis/hvac/{zone}/command`). Zone-level role grants. | Planned |
+| **Stage 9** | Production hardening | Keycloak with PostgreSQL backend. HTTPS via reverse proxy. TLS on MQTT. Production Compose overrides. Secrets management baseline. | Planned |
+| **Stage 10** | Real device integration | BACnet/IP or Modbus TCP adapter alongside the simulator. Read real sensor data. Gate real actuator commands behind the same auth layer. | Planned |
 
 Basis Foundation does not currently have a target deployment architecture for production. The intent is to validate the identity and authorization model at the application level before introducing infrastructure complexity.
 
@@ -463,27 +480,46 @@ basis-poc/
 ├── docker-compose.yml              # All services, networks, volumes
 ├── .env.example                    # Reference configuration — copy to .env
 ├── .gitignore
+├── LICENSE                         # Apache 2.0
+├── SECURITY.md                     # Vulnerability reporting policy
 ├── README.md
+│
+├── docs/
+│   ├── platform-architecture.md   # Architectural direction and domain model
+│   └── screenshots/               # UI screenshots for README
 │
 ├── infra/
 │   ├── keycloak/
 │   │   └── realm-export.json       # basis realm: roles, clients, demo users
 │   └── mosquitto/
-│       └── mosquitto.conf          # Broker config: listeners, logging
+│       ├── mosquitto.conf          # Broker config: auth enabled, listeners, logging
+│       └── passwd                  # PBKDF2-SHA512 hashed service credentials
 │
 └── services/
     ├── api/                        # FastAPI backend
     │   ├── Dockerfile
     │   ├── requirements.txt
     │   ├── main.py                 # App factory, lifecycle, public routes
-    │   ├── auth.py                 # JWKS fetch, JWT validation, require_role()
-    │   ├── mqtt_client.py          # aiomqtt subscriber — background asyncio task
-    │   ├── mqtt_publisher.py       # paho publish.single() — fire-and-forget commands
+    │   ├── auth.py                 # JWKS fetch, JWT validation, require_role() + audit
     │   ├── ws_manager.py           # WebSocket broadcaster — snapshot + fan-out
+    │   ├── mqtt_client.py          # Compatibility shim → adapters/mqtt/subscriber
+    │   ├── mqtt_publisher.py       # Compatibility shim → adapters/mqtt/publisher
+    │   ├── adapters/               # External system adapters
+    │   │   ├── base.py             # AdapterBase ABC
+    │   │   └── mqtt/
+    │   │       ├── topics.py       # Single source of truth for MQTT topic strings
+    │   │       ├── subscriber.py   # aiomqtt subscriber — authenticated, background task
+    │   │       └── publisher.py    # paho publish.single() — authenticated, fire-and-forget
+    │   ├── audit/                  # Audit infrastructure
+    │   │   ├── store.py            # AuditStore ABC + StdoutAuditStore
+    │   │   └── logger.py           # AuditLogger facade — never raises on write failure
+    │   ├── domain/                 # Pure domain models — no I/O, no FastAPI imports
+    │   │   └── events.py           # AuditEvent Pydantic model
     │   └── routers/
     │       ├── protected.py        # /api/me, /api/viewer, /api/operator, /api/admin
     │       ├── telemetry.py        # /ws/telemetry — WebSocket endpoint
-    │       └── controls.py         # /api/controls/hvac/{zone}/setpoint
+    │       ├── controls.py         # /api/controls/hvac/{zone}/setpoint
+    │       └── audit.py            # /api/audit — admin only, returns 501 (stdout store)
     │
     ├── frontend/                   # React + Vite SPA
     │   ├── Dockerfile
@@ -506,7 +542,7 @@ basis-poc/
         ├── Dockerfile
         ├── requirements.txt
         └── simulator.py            # HVACSimulator, CO2Simulator, OccupancySimulator
-                                    # Subscribes to basis/hvac/+/command
+                                    # Authenticated MQTT — subscribes to basis/hvac/+/command
 ```
 
 ---
