@@ -71,6 +71,12 @@ Numbers do not imply priority or importance — they reflect the order in which 
 
 ---
 
+## Related Documentation
+
+For a full walkthrough of how these decisions manifest in the running system — including request lifecycle diagrams, domain concept descriptions, and developer walkthroughs — see the [Architecture Overview](../architecture/overview.md).
+
+---
+
 ## Proposing a New ADR
 
 Create a new file following the naming convention, write a draft using the format above, and open a pull request. The bar for acceptance is that the decision is architecturally significant and the reasoning is clearly stated. Minor implementation choices do not warrant ADRs.

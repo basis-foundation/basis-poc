@@ -17,6 +17,7 @@ A proof-of-concept demonstrating identity-aware access control applied to buildi
 - [Demo Role Matrix](#demo-role-matrix)
 - [Local Development Setup](#local-development-setup)
 - [Security Design Decisions](#security-design-decisions)
+- [Architecture Documentation](#architecture-documentation)
 - [Architecture Decision Records](#architecture-decision-records)
 - [Current Limitations](#current-limitations)
 - [Roadmap](#roadmap)
@@ -427,6 +428,10 @@ This eliminates anonymous MQTT access within the Docker network. TLS on the MQTT
 `keycloak-js` stores tokens in memory, not `localStorage` or `sessionStorage`. This prevents token theft via XSS. The tradeoff is that tokens are lost on page reload, requiring a silent re-authentication via Keycloak's session cookie.
 
 ---
+
+## Architecture Documentation
+
+For a comprehensive walkthrough of the platform architecture — including domain concepts, request lifecycle diagrams, and developer walkthroughs — see the [Architecture Overview](docs/architecture/overview.md).
 
 ## Architecture Decision Records
 
