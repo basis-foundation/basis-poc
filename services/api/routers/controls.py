@@ -2,13 +2,22 @@
 Basis Foundation — HVAC Control Endpoints
 Stage 4: Operator/admin-only setpoint commands published to MQTT.
 Stage 5: Command dispatch outcomes recorded to audit log.
+Stage 7: Migrated from require_role() to require_action() + Subject.
 
 Authorization:
-  - viewer  → 403 Forbidden (recorded by require_role in auth.py)
+  - viewer  → 403 Forbidden (denied by RoleBasedPolicy, recorded by require_action)
   - operator → allowed
   - admin   → allowed
 
-Validation (three layers):
+Authorization now flows through:
+  require_action(WRITE_HVAC_SETPOINT)
+    → PolicyEngine.evaluate(subject, "write:hvac:setpoint")
+    → RoleBasedPolicy checks _ACTION_ROLES table
+    → PolicyResult(allowed=True/False)
+    → AuditEvent recorded (authorization decision)
+    → Subject returned to handler (or 403 raised)
+
+Validation layers (unchanged):
   1. Pydantic field constraints  — type, ge/le bounds → 422 Unprocessable Entity
   2. Zone allow-list             — unknown zones → 404
   3. Simulator validates again   — belt-and-suspenders against broker replay attacks
@@ -16,8 +25,10 @@ Validation (three layers):
 Audit call sites in this module:
   - command_dispatch/allowed  — MQTT publish succeeded
   - command_dispatch/error    — MQTT publish failed (503 returned to caller)
-Note: the api_access audit record (role check) is written by require_role()
-in auth.py before this handler is reached.
+Note: the authorization audit record (action=write:hvac:setpoint) is written by
+require_action() in auth.py before this handler is reached. These two records
+are complementary: one records the authorization decision, the other records
+the delivery outcome.
 """
 
 from datetime import datetime, timezone
@@ -27,8 +38,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Path
 from pydantic import BaseModel, Field
 
 from audit import audit_logger
-from auth import require_role, get_roles
+from auth import require_action
 from domain.events import AuditEvent
+from domain.subject import Subject
+from policy import actions
 from adapters.mqtt.publisher import publish_command
 
 router = APIRouter(prefix="/api/controls", tags=["controls"])
@@ -73,7 +86,7 @@ class SetpointResponse(BaseModel):
     summary="Set HVAC zone setpoint",
     description=(
         "Publishes a setpoint command to `basis/hvac/{zone}/command`.\n\n"
-        "**Required role:** `operator` or `admin`.\n\n"
+        "**Required action:** `write:hvac:setpoint` (operator or admin role).\n\n"
         "The simulator will receive the command and gradually drive "
         "`current_temperature` toward the new `target_temperature`."
     ),
@@ -84,25 +97,23 @@ async def set_hvac_setpoint(
         Path(description="Zone identifier — currently only 'main' is simulated"),
     ],
     command: SetpointCommand,
-    user: dict = Depends(require_role("operator", "admin")),
+    subject: Subject = Depends(require_action(actions.WRITE_HVAC_SETPOINT)),
 ) -> SetpointResponse:
-    # Zone validation
+    # Zone validation — checked after authorization so an unauthorized caller
+    # cannot enumerate valid zones by probing for 404 vs 403.
     if zone not in VALID_ZONES:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown zone '{zone}'. Valid zones: {sorted(VALID_ZONES)}",
         )
 
-    username    = user.get("preferred_username", "unknown")
-    subject_id  = user.get("sub", "unknown")
-    user_roles  = get_roles(user)
     now         = datetime.now(timezone.utc).isoformat()
     topic       = f"basis/hvac/{zone}/command"
     resource_id = f"hvac:{zone}"
 
     mqtt_payload = {
         "target_temperature": command.target_temperature,
-        "requested_by":       username,
+        "requested_by":       subject.name,
         "zone":               zone,
         "timestamp":          now,
     }
@@ -111,9 +122,10 @@ async def set_hvac_setpoint(
         await publish_command(topic, mqtt_payload)
     except RuntimeError as exc:
         await audit_logger.record(AuditEvent(
-            subject_id=subject_id,
-            subject_name=username,
-            subject_roles=user_roles,
+            subject_id=subject.id,
+            subject_name=subject.name,
+            subject_type=subject.type.value,
+            subject_roles=subject.roles,
             action="command_dispatch",
             resource_id=resource_id,
             endpoint=f"POST /api/controls/hvac/{zone}/setpoint",
@@ -127,9 +139,10 @@ async def set_hvac_setpoint(
         )
 
     await audit_logger.record(AuditEvent(
-        subject_id=subject_id,
-        subject_name=username,
-        subject_roles=user_roles,
+        subject_id=subject.id,
+        subject_name=subject.name,
+        subject_type=subject.type.value,
+        subject_roles=subject.roles,
         action="command_dispatch",
         resource_id=resource_id,
         endpoint=f"POST /api/controls/hvac/{zone}/setpoint",
@@ -141,7 +154,7 @@ async def set_hvac_setpoint(
         status="command_sent",
         zone=zone,
         target_temperature=command.target_temperature,
-        requested_by=username,
+        requested_by=subject.name,
         mqtt_topic=topic,
         timestamp=now,
     )

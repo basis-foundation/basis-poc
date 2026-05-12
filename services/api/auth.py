@@ -1,15 +1,48 @@
 """
-Basis Foundation — JWT Authentication & Authorization
-Validates Keycloak-issued access tokens using the realm's JWKS endpoint.
+Basis Foundation — Authentication & Authorization
+Stage 7: Identity-aware policy architecture.
 
-Flow:
+Authentication flow (unchanged from Stage 6):
   1. Extract Bearer token from Authorization header
-  2. Read kid (key ID) from JWT header — identifies which RSA key signed the token
-  3. Fetch Keycloak's JWKS (cached, refreshed every 5 min or on unknown kid)
+  2. Read kid (key ID) from JWT header
+  3. Fetch Keycloak's JWKS (cached 5 min, force-refreshed on unknown kid)
   4. Decode & validate: signature, expiry, issuer
-  5. Extract realm_access.roles from payload
-  6. Enforce role requirements via require_role() dependency factory
-  7. Record authorization decision to audit log (Stage 5)
+  5. Resolve JWT payload → Subject via subject_from_jwt()
+
+Authorization flow (new in Stage 7):
+  6. PolicyEngine evaluates Subject + action + optional resource_id
+  7. RoleBasedPolicy checks _ACTION_ROLES table → PolicyResult
+  8. Allowed: return Subject to handler
+     Denied:  record audit event, raise HTTP 403
+
+Why require_action() replaces require_role()
+─────────────────────────────────────────────
+require_role("operator", "admin") couples each endpoint to the current role names.
+require_action("write:hvac:setpoint") decouples the endpoint from the role model.
+The mapping from action → roles lives in policy/rbac.py, not scattered across routers.
+
+This means:
+  - Adding a "supervisor" role that can send HVAC commands = 1 line in rbac.py.
+  - The setpoint endpoint is untouched.
+
+require_role() is preserved as a legacy shim. It is no longer called by any
+BASIS router in Stage 7 but remains for backward compatibility and as a
+fallback during incremental migrations.
+
+Subject resolution
+──────────────────
+subject_from_jwt() translates the raw JWT payload dict into a typed Subject.
+This happens once per request at the authentication boundary. All downstream
+code (policy evaluation, audit recording, route handlers) works with Subject.
+
+Example — Bob authenticates:
+  JWT payload → {"sub": "a7b8...", "preferred_username": "bob",
+                  "realm_access": {"roles": ["operator", ...]}, ...}
+  Subject     → Subject(id="a7b8...", name="bob", type=HUMAN,
+                        roles=["operator", ...], email="bob@basis.local")
+  Action      → "write:hvac:setpoint"
+  PolicyResult → allowed=True (operator is in WRITE_HVAC_SETPOINT roles)
+  Audit        → AUDIT outcome=allowed  subject=bob  action=write:hvac:setpoint  ...
 """
 
 import os
@@ -24,6 +57,8 @@ from jose import jwt, JWTError
 
 from audit import audit_logger
 from domain.events import AuditEvent
+from domain.subject import Subject, subject_from_jwt
+from policy import engine as policy_engine
 
 log = logging.getLogger("basis.auth")
 
@@ -148,13 +183,16 @@ async def validate_token(token: str) -> dict:
         )
 
 
-# ── Role Helpers ──────────────────────────────────────────────────────────────
+# ── Role Helpers (legacy — used by require_role shim and /me endpoint) ────────
 def get_roles(payload: dict) -> list[str]:
     """
     Extract realm roles from a decoded JWT payload.
 
     Keycloak stores realm roles at: payload["realm_access"]["roles"]
     Example: ["viewer", "default-roles-basis", "offline_access", "uma_authorization"]
+
+    Prefer subject.roles when working with a Subject object.
+    This function is retained for the /me endpoint and the require_role() shim.
     """
     return payload.get("realm_access", {}).get("roles", [])
 
@@ -176,30 +214,121 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict:
     """
-    FastAPI dependency — validates the Bearer token and returns the JWT payload.
+    FastAPI dependency — validates the Bearer token and returns the raw JWT payload.
 
-    Inject into any endpoint that requires a logged-in user:
-        async def my_endpoint(user = Depends(get_current_user)):
+    Used by:
+      - get_current_subject() (wraps this to produce a Subject)
+      - /api/me endpoint (needs raw JWT fields like iss and exp)
+      - require_role() shim (legacy path)
+
+    New code should prefer get_current_subject() or require_action().
     """
     return await validate_token(credentials.credentials)
 
 
-def require_role(*roles: str):
+async def get_current_subject(
+    payload: dict = Depends(get_current_user),
+) -> Subject:
     """
-    FastAPI dependency factory — enforces that the caller holds at least one
-    of the specified realm roles.
+    FastAPI dependency — validates the Bearer token and returns a typed Subject.
+
+    This is the preferred dependency for endpoints that need identity information
+    without an authorization gate (e.g., /api/me).
+
+    For endpoints that also need authorization, use require_action() instead —
+    it calls get_current_user internally and returns a Subject on success.
+    """
+    return subject_from_jwt(payload)
+
+
+# ── Stage 7: require_action() — primary authorization dependency ───────────────
+def require_action(action: str, resource_id: Optional[str] = None):
+    """
+    FastAPI dependency factory — enforces that the caller is authorized to
+    perform the specified action, evaluated by the PolicyEngine.
 
     Usage:
-        @router.get("/operator-only")
-        async def op(user = Depends(require_role("operator", "admin"))):
+        @router.post("/hvac/{zone}/setpoint")
+        async def set_setpoint(
+            subject: Subject = Depends(require_action("write:hvac:setpoint")),
+        ):
+            # subject is a fully resolved Subject; authorization is already confirmed.
             ...
 
-    Returns HTTP 403 if the user is authenticated but lacks the required role.
-    Returns HTTP 401 if no valid token is provided at all.
+    Flow:
+        1. Validate Bearer token → JWT payload (via get_current_user)
+        2. Resolve JWT payload → Subject (via subject_from_jwt)
+        3. PolicyEngine.evaluate(subject, action, resource_id) → PolicyResult
+        4. Record AuditEvent (allowed or denied — always recorded)
+        5a. Allowed → return Subject to the handler
+        5b. Denied  → raise HTTP 403 with the policy's reason
 
-    Stage 5: Records every authorization decision (allowed and denied) to the
-    audit log. The audit call is non-fatal — a logging failure will never
-    affect the HTTP response.
+    Why this returns Subject (not dict):
+        Route handlers receive typed domain objects, not raw JWT dicts.
+        subject.name, subject.id, subject.roles — no more .get() with defaults.
+
+    Why resource_id is optional here:
+        For path-parameterized resources (e.g., /hvac/{zone}/setpoint), the
+        zone is not known at dependency setup time. Pass resource_id=None here;
+        the handler records the resource in its command_dispatch audit event.
+        Stage 8 will introduce zone-scoped policies that need resource_id.
+    """
+    async def _enforce(
+        request: Request,
+        payload: dict = Depends(get_current_user),
+    ) -> Subject:
+        subject  = subject_from_jwt(payload)
+        result   = policy_engine.evaluate(subject, action, resource_id)
+        endpoint = f"{request.method} {request.url.path}"
+
+        # Record the authorization decision — always, regardless of outcome.
+        # Audit failures are non-fatal (AuditLogger swallows exceptions).
+        await audit_logger.record(AuditEvent(
+            subject_id=subject.id,
+            subject_name=subject.name,
+            subject_type=subject.type.value,
+            subject_roles=subject.roles,
+            action=action,
+            resource_id=resource_id,
+            endpoint=endpoint,
+            outcome="allowed" if result.allowed else "denied",
+            reason=None if result.allowed else result.reason,
+        ))
+
+        if not result.allowed:
+            log.warning(
+                "403  subject='%s'  type=%s  roles=%s  action='%s'  policy=%s",
+                subject.name, subject.type.value, subject.roles,
+                action, result.evaluated_by,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=result.reason,
+            )
+
+        return subject
+
+    return _enforce
+
+
+# ── Legacy shim: require_role() ────────────────────────────────────────────────
+def require_role(*roles: str):
+    """
+    Legacy FastAPI dependency factory — enforces that the caller holds at least
+    one of the specified realm roles.
+
+    Stage 7 status: SHIM — no longer called by any BASIS router.
+    All routers have been migrated to require_action().
+
+    Retained for:
+      - Backward compatibility if external code depends on this function.
+      - As a fallback during future incremental migrations.
+      - Reference: documents what require_action() replaced.
+
+    The original implementation is preserved unchanged so that any existing
+    caller continues to receive exactly the same behavior as Stage 6.
+    Returns the raw JWT payload dict (not a Subject) — callers must use
+    user.get("preferred_username") etc. as before.
     """
     async def _enforce(
         request: Request,
