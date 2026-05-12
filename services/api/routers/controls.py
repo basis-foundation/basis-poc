@@ -3,6 +3,9 @@ Basis Foundation — HVAC Control Endpoints
 Stage 4: Operator/admin-only setpoint commands published to MQTT.
 Stage 5: Command dispatch outcomes recorded to audit log.
 Stage 7: Migrated from require_role() to require_action() + Subject.
+Stage 7b: CommandEvent constructed before publish_command(). Provides a single
+          typed object capturing subject, resource, action, and payload context.
+          The MQTT payload dict forwarded to the broker is unchanged.
 Stage 8: Resource-aware. Zone validation now driven by the resource registry.
          ResourceIdentifier.build() constructs normalized IDs.
          AuditEvents carry resource_type as a first-class field.
@@ -42,7 +45,7 @@ from pydantic import BaseModel, Field
 
 from audit import audit_logger
 from auth import require_action
-from domain.events import AuditEvent
+from domain.events import AuditEvent, CommandEvent
 from domain.resource import ResourceIdentifier, ResourceType, list_resources, resolve_resource
 from domain.subject import Subject
 from policy import actions
@@ -132,8 +135,22 @@ async def set_hvac_setpoint(
         "timestamp":          now,
     }
 
+    # ── CommandEvent construction (Stage 7b) ──────────────────────────────────
+    # Captures the full command context as a typed domain object before dispatch.
+    # command_event.payload is the same dict forwarded to publish_command() —
+    # the MQTT wire format is unchanged.
+    command_event = CommandEvent(
+        command_type=f"{resource.type.value}:setpoint",
+        resource_id=resource.id,
+        resource_type=resource.type.value,
+        subject_id=subject.id,
+        subject_name=subject.name,
+        action=actions.WRITE_HVAC_SETPOINT,
+        payload=mqtt_payload,
+    )
+
     try:
-        await publish_command(topic, mqtt_payload)
+        await publish_command(topic, command_event.payload)
     except RuntimeError as exc:
         await audit_logger.record(AuditEvent(
             subject_id=subject.id,

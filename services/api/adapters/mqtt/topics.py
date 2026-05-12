@@ -1,5 +1,6 @@
 """
 BASIS — MQTT Topic Registry
+Stage 7b: TOPIC_TO_RESOURCE mapping added for TelemetryEvent construction.
 
 Single source of truth for all MQTT topic strings used by the API.
 
@@ -33,6 +34,20 @@ KNOWN_TOPICS = {
     TELEMETRY_OCCUPANCY,
     SIMULATOR_STATUS,
     SIMULATOR_HEARTBEAT,
+}
+
+
+# ── Topic → Resource mapping (Stage 7b) ──────────────────────────────────────
+# Maps each telemetry topic to its normalized resource ID.
+# Used by the MQTT subscriber to populate TelemetryEvent.resource_id and
+# TelemetryEvent.resource_type without parsing the topic string.
+#
+# Only telemetry topics are listed — command and simulator metadata topics
+# are not resource-bearing in the context of TelemetryEvent construction.
+TOPIC_TO_RESOURCE: dict[str, str] = {
+    TELEMETRY_HVAC:      "hvac:main",
+    TELEMETRY_CO2:       "sensor:co2",
+    TELEMETRY_OCCUPANCY: "sensor:occupancy",
 }
 
 
