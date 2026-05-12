@@ -17,6 +17,7 @@ A proof-of-concept demonstrating identity-aware access control applied to buildi
 - [Demo Role Matrix](#demo-role-matrix)
 - [Local Development Setup](#local-development-setup)
 - [Security Design Decisions](#security-design-decisions)
+- [Architecture Decision Records](#architecture-decision-records)
 - [Current Limitations](#current-limitations)
 - [Roadmap](#roadmap)
 - [Project Structure](#project-structure)
@@ -424,6 +425,23 @@ This eliminates anonymous MQTT access within the Docker network. TLS on the MQTT
 ### Tokens in memory only
 
 `keycloak-js` stores tokens in memory, not `localStorage` or `sessionStorage`. This prevents token theft via XSS. The tradeoff is that tokens are lost on page reload, requiring a silent re-authentication via Keycloak's session cookie.
+
+---
+
+## Architecture Decision Records
+
+The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records documenting the reasoning behind the major architectural choices in BASIS. ADRs explain *why* decisions were made — including the alternatives considered and the trade-offs accepted.
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-0001](docs/adr/ADR-0001-modular-monolith-architecture.md) | Modular monolith over microservices |
+| [ADR-0002](docs/adr/ADR-0002-sqlite-audit-persistence.md) | SQLite for local-first audit persistence |
+| [ADR-0003](docs/adr/ADR-0003-mqtt-as-transport-layer.md) | MQTT treated as transport only, not domain model |
+| [ADR-0004](docs/adr/ADR-0004-action-based-authorization.md) | Action-based authorization over role checks at endpoints |
+| [ADR-0005](docs/adr/ADR-0005-subject-resource-event-normalization.md) | Normalized Subject, Resource, and Event domain models |
+| [ADR-0006](docs/adr/ADR-0006-local-first-architecture.md) | Local-first, air-gap compatible deployment philosophy |
+| [ADR-0007](docs/adr/ADR-0007-wire-compatibility-during-refactors.md) | Preserve wire compatibility during internal refactors |
+| [ADR-0008](docs/adr/ADR-0008-no-kubernetes-dependency.md) | No Kubernetes dependency |
 
 ---
 
