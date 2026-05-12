@@ -30,6 +30,15 @@ Stage 7b: Normalized event models introduced.
          adapters/mqtt/subscriber.py — _handle_message constructs TelemetryEvent internally.
          routers/controls.py — CommandEvent constructed before publish_command(); same
                               dict payload forwarded to broker (wire format unchanged).
+Stage 5b: SQLite audit persistence introduced.
+         audit/store.py     — SqliteAuditStore (sqlite3 stdlib, asyncio.to_thread writes,
+                              WAL mode, indexed schema) and DualAuditStore (composite
+                              StdoutAuditStore + SqliteAuditStore).
+         audit/__init__.py  — sqlite_store singleton exported; DualAuditStore wired;
+                              initialize_audit_db() called at startup.
+         routers/audit.py   — GET /api/audit (filters: subject_id, outcome, action,
+                              resource_id, limit) and GET /api/audit/{event_id} implemented.
+         docker-compose.yml — audit_data named volume mounted at /data in api service.
 """
 
 import asyncio
@@ -38,6 +47,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from audit import initialize_audit_db
 from routers.protected  import router as protected_router
 from routers.telemetry  import router as telemetry_router
 from routers.controls   import router as controls_router
@@ -64,16 +74,19 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
+        "**Stage 5b**: SQLite audit persistence. All audit events are now durably "
+        "stored in a local SQLite database alongside stdout logging. "
+        "`GET /api/audit` supports filtering by subject, outcome, action, and resource. "
+        "`GET /api/audit/{event_id}` retrieves a single record.\n\n"
         "**Stage 7b**: Normalized event models. `TelemetryEvent` and `CommandEvent` "
-        "are now the internal canonical representations of inbound telemetry and "
-        "outbound commands. WebSocket wire format and MQTT payload format are unchanged.\n\n"
+        "are the internal canonical representations of inbound telemetry and "
+        "outbound commands.\n\n"
         "**Stage 8**: Resource model. OT resources (HVAC, sensors, zones) are "
         "normalized typed objects. Zone validation is registry-driven. "
-        "Audit events carry `resource_type` as a first-class field. "
         "`GET /api/resources` exposes the OT topology to API consumers.\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.8.1",
+    version="0.9.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -100,7 +113,9 @@ _mqtt_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def startup() -> None:
     global _mqtt_task
-    log.info("Basis API v0.8.1 starting up (Stage 7b — normalized event models)")
+    log.info("Basis API v0.9.0 starting up (Stage 5b — SQLite audit persistence)")
+    initialize_audit_db()
+    log.info("Audit DB initialized")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
@@ -124,7 +139,7 @@ async def shutdown() -> None:
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.8.1", "stage": 8, "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.9.0", "stage": "5b+7b+8", "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -133,7 +148,7 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.8.1",
+        "version": "0.9.0",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -146,13 +161,14 @@ def config():
         "keycloak_realm":        KEYCLOAK_REALM,
         "mqtt_broker_host":      MQTT_BROKER_HOST,
         "mqtt_broker_port":      MQTT_BROKER_PORT,
-        "stage": 8,
+        "stage": "5b+7b+8",
         "features": {
             "auth":                True,
             "telemetry":           True,
             "controls":            True,
             "audit_log":           True,
-            "audit_api":           False,  # returns 501 until Stage 5b
+            "audit_api":           True,   # GET /api/audit + GET /api/audit/{id} live (Stage 5b)
+            "audit_sqlite":        True,   # dual-write: stdout + SQLite (Stage 5b)
             "mqtt_auth":           True,   # broker requires credentials
             "policy_engine":       True,   # PolicyEngine + RoleBasedPolicy active
             "subject_model":       True,   # JWT → Subject resolution at auth boundary

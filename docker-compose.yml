@@ -62,9 +62,14 @@ services:
       MQTT_USERNAME: ${MQTT_API_USERNAME:-basis-api}
       MQTT_PASSWORD: ${MQTT_API_PASSWORD:-basis-api-secret}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # Stage 5b: SQLite audit DB path inside the audit_data named volume.
+      # Override with AUDIT_DB_PATH env var if needed (e.g. for testing).
+      AUDIT_DB_PATH: ${AUDIT_DB_PATH:-/data/audit.db}
     volumes:
       # Mount source for hot reload — Dockerfile installs deps at build time
       - ./services/api:/app
+      # Stage 5b: persist audit DB across container restarts
+      - audit_data:/data
     ports:
       - "8000:8000"
     depends_on:
@@ -119,6 +124,9 @@ volumes:
   mosquitto_data:
   mosquitto_logs:
   frontend_node_modules:
+  # Stage 5b: audit_data persists the SQLite audit DB across container restarts.
+  # Inspect: docker compose exec api sqlite3 /data/audit.db "SELECT * FROM audit_events"
+  audit_data:
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 networks:
