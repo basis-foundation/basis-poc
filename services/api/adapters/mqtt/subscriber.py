@@ -1,5 +1,8 @@
 """
 BASIS — MQTT Subscriber Adapter
+Stage 7b: _handle_message now constructs a TelemetryEvent for telemetry topics.
+          The TelemetryEvent is used for structured internal logging — the
+          broadcaster.broadcast() call is unchanged (WebSocket wire format preserved).
 
 Runs as a persistent asyncio background task started during FastAPI startup.
 Subscribes to all basis/# topics, parses payloads, and forwards to the
@@ -25,10 +28,12 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 import aiomqtt
 
-from adapters.mqtt.topics import SUBSCRIBE_ALL, KNOWN_TOPICS
+from adapters.mqtt.topics import SUBSCRIBE_ALL, KNOWN_TOPICS, TOPIC_TO_RESOURCE
+from domain.events import TelemetryEvent
 from ws_manager import broadcaster
 
 log = logging.getLogger("basis.mqtt.subscriber")
@@ -56,7 +61,14 @@ else:
 
 
 async def _handle_message(topic: str, raw: bytes) -> None:
-    """Parse a raw MQTT payload and broadcast it to WebSocket clients."""
+    """
+    Parse a raw MQTT payload, construct a TelemetryEvent for telemetry topics,
+    and broadcast the payload to WebSocket clients.
+
+    TelemetryEvent is used for structured internal logging and future routing.
+    The broadcaster.broadcast() call is unchanged — WebSocket wire format is
+    the raw topic string + original payload dict.
+    """
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -66,7 +78,36 @@ async def _handle_message(topic: str, raw: bytes) -> None:
     if topic not in KNOWN_TOPICS:
         log.debug("Received message on unexpected topic: %s", topic)
 
-    log.debug("MQTT → %s  clients=%d", topic, broadcaster.client_count)
+    # ── TelemetryEvent construction (Stage 7b) ────────────────────────────────
+    # Only construct for known telemetry topics. Simulator metadata topics
+    # (status, heartbeat) are not resource-bearing and skip this path.
+    resource_id = TOPIC_TO_RESOURCE.get(topic, "")
+    if resource_id:
+        # Parse timestamp from payload if present; fall back to ingestion time.
+        raw_ts = payload.get("timestamp")
+        try:
+            ts = datetime.fromisoformat(raw_ts) if raw_ts else datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            ts = datetime.now(timezone.utc)
+
+        # resource_type is the part before the first colon: "hvac:main" → "hvac"
+        resource_type = resource_id.split(":")[0] if ":" in resource_id else resource_id
+
+        telemetry_event = TelemetryEvent(
+            resource_id=resource_id,
+            resource_type=resource_type,
+            source=topic,
+            timestamp=ts,
+            payload=payload,
+        )
+        log.debug(
+            "MQTT telemetry → %s  resource=%s  clients=%d",
+            topic, telemetry_event.resource_id, broadcaster.client_count,
+        )
+    else:
+        log.debug("MQTT → %s  clients=%d", topic, broadcaster.client_count)
+
+    # WebSocket broadcast is unchanged — raw topic + original payload dict.
     await broadcaster.broadcast(topic, payload)
 
 

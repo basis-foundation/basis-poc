@@ -23,6 +23,13 @@ Stage 8: Resource model introduction.
                               resource_type as a first-class field alongside resource_id.
          domain/events.py   — resource_type field added to AuditEvent.
          audit/store.py     — rtype= emitted in log lines when resource_type is set.
+Stage 7b: Normalized event models introduced.
+         domain/events.py   — TelemetryEvent and CommandEvent added as internal canonical
+                              representations of inbound telemetry and outbound commands.
+         adapters/mqtt/topics.py — TOPIC_TO_RESOURCE mapping added.
+         adapters/mqtt/subscriber.py — _handle_message constructs TelemetryEvent internally.
+         routers/controls.py — CommandEvent constructed before publish_command(); same
+                              dict payload forwarded to broker (wire format unchanged).
 """
 
 import asyncio
@@ -57,13 +64,16 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
+        "**Stage 7b**: Normalized event models. `TelemetryEvent` and `CommandEvent` "
+        "are now the internal canonical representations of inbound telemetry and "
+        "outbound commands. WebSocket wire format and MQTT payload format are unchanged.\n\n"
         "**Stage 8**: Resource model. OT resources (HVAC, sensors, zones) are "
         "normalized typed objects. Zone validation is registry-driven. "
         "Audit events carry `resource_type` as a first-class field. "
         "`GET /api/resources` exposes the OT topology to API consumers.\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.8.0",
+    version="0.8.1",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -90,7 +100,7 @@ _mqtt_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def startup() -> None:
     global _mqtt_task
-    log.info("Basis API v0.8.0 starting up (Stage 8 — resource model introduction)")
+    log.info("Basis API v0.8.1 starting up (Stage 7b — normalized event models)")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
@@ -114,7 +124,7 @@ async def shutdown() -> None:
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.8.0", "stage": 8, "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.8.1", "stage": 8, "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -123,7 +133,7 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.8.0",
+        "version": "0.8.1",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -138,15 +148,16 @@ def config():
         "mqtt_broker_port":      MQTT_BROKER_PORT,
         "stage": 8,
         "features": {
-            "auth":             True,
-            "telemetry":        True,
-            "controls":         True,
-            "audit_log":        True,
-            "audit_api":        False,  # returns 501 until Stage 5b
-            "mqtt_auth":        True,   # broker requires credentials
-            "policy_engine":    True,   # PolicyEngine + RoleBasedPolicy active
-            "subject_model":    True,   # JWT → Subject resolution at auth boundary
-            "resource_model":   True,   # Typed Resource objects; registry-driven validation
-            "resource_api":     True,   # GET /api/resources exposes OT topology
+            "auth":                True,
+            "telemetry":           True,
+            "controls":            True,
+            "audit_log":           True,
+            "audit_api":           False,  # returns 501 until Stage 5b
+            "mqtt_auth":           True,   # broker requires credentials
+            "policy_engine":       True,   # PolicyEngine + RoleBasedPolicy active
+            "subject_model":       True,   # JWT → Subject resolution at auth boundary
+            "resource_model":      True,   # Typed Resource objects; registry-driven validation
+            "resource_api":        True,   # GET /api/resources exposes OT topology
+            "normalized_events":   True,   # TelemetryEvent + CommandEvent internal models
         },
     }
