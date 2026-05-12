@@ -452,7 +452,7 @@ flowchart LR
     SQ --> TH[asyncio.to_thread\nblocking I/O off event loop]
     TH --> DB[(audit.db\n/data/audit.db)]
     DB --> QA[GET /api/audit\nquery with filters]
-    DB --> QB[GET /api/audit/{id}\nsingle record]
+    DB --> QB[GET /api/audit/:event_id\nsingle record]
 ```
 
 `AuditLogger.record()` never raises. Any exception from either store is caught, logged as an error, and swallowed. Audit failures do not affect the outcome of the request being audited.
