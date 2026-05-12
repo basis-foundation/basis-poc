@@ -1,6 +1,7 @@
 """
 BASIS — Action Constants
 Stage 7: Defines the named actions that subjects may request in BASIS.
+Stage 8: READ_RESOURCES action added for the resource registry endpoint.
 
 Why named actions instead of role strings at endpoints
 ───────────────────────────────────────────────────────
@@ -52,6 +53,13 @@ ACCESS_ADMIN_API    = "read:api:admin"     # /api/admin   — admin only
 # Stage 8 will add zone-scoped variants: write:hvac:setpoint:zone/{zone}
 
 WRITE_HVAC_SETPOINT = "write:hvac:setpoint"
+
+# ── Resource actions ───────────────────────────────────────────────────────────
+# Reading the resource registry is available to all authenticated users.
+# The registry is static (no database) so exposure carries no significant risk.
+# This action gives the frontend and API consumers visibility into the OT topology.
+
+READ_RESOURCES = "read:resources"
 
 # ── Audit actions ──────────────────────────────────────────────────────────────
 # Querying the audit log is an admin-only operation.
