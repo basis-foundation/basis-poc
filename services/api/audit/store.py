@@ -2,6 +2,7 @@
 BASIS — Audit Store
 Stage 5: StdoutAuditStore — writes structured audit lines to the uvicorn logger.
 Stage 7: action column widened; action names are now semantic policy strings.
+Stage 8: resource_type (rtype=) added as a first-class log field alongside resource=.
 
 Stage 5b will add SqliteAuditStore. The interface is defined here so that
 AuditLogger can swap backends without any change to call sites.
@@ -11,8 +12,14 @@ The stdout format is designed to be grep-friendly in docker compose logs:
   AUDIT  outcome=allowed  subject=bob    action=read:api:operator             endpoint=GET /api/operator
   AUDIT  outcome=denied   subject=alice  action=read:api:operator             endpoint=GET /api/operator
   AUDIT  outcome=allowed  subject=bob    action=write:hvac:setpoint           endpoint=POST /api/controls/hvac/main/setpoint
-  AUDIT  outcome=allowed  subject=bob    action=command_dispatch              resource=hvac:main
-  AUDIT  outcome=error    subject=bob    action=command_dispatch              resource=hvac:main  reason=...
+  AUDIT  outcome=allowed  subject=bob    action=command_dispatch              resource=hvac:main  rtype=hvac
+  AUDIT  outcome=error    subject=bob    action=command_dispatch              resource=hvac:main  rtype=hvac  reason=...
+
+Grep recipes:
+  All HVAC events:         docker compose logs api | grep "rtype=hvac"
+  All denied decisions:    docker compose logs api | grep "AUDIT.*outcome=denied"
+  Bob's audit trail:       docker compose logs api | grep "AUDIT.*subject=bob"
+  All command dispatches:  docker compose logs api | grep "action=command_dispatch"
 """
 
 import json
@@ -63,6 +70,8 @@ class StdoutAuditStore(AuditStore):
 
         if event.resource_id:
             parts.append(f"resource={event.resource_id}")
+        if event.resource_type:
+            parts.append(f"rtype={event.resource_type}")
 
         if event.endpoint:
             parts.append(f"endpoint={event.endpoint}")

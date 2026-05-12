@@ -1,6 +1,7 @@
 """
 BASIS — Role-Based Access Control Policy
 Stage 7: Maps named actions to the realm roles that may perform them.
+Stage 8: READ_RESOURCES added — viewer, operator, and admin may read the resource registry.
 
 This is the authoritative role model for BASIS. It replaces the scattered
 require_role("operator", "admin") calls that previously lived in each router.
@@ -68,6 +69,9 @@ _ACTION_ROLES: dict[str, set[str]] = {
 
     # ── HVAC control ───────────────────────────────────────────────────────────
     actions.WRITE_HVAC_SETPOINT: {"operator", "admin"},
+
+    # ── Resource registry ──────────────────────────────────────────────────────
+    actions.READ_RESOURCES:      {"viewer", "operator", "admin"},
 
     # ── Audit log access ───────────────────────────────────────────────────────
     actions.READ_AUDIT_LOG:      {"admin"},
