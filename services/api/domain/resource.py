@@ -1,6 +1,10 @@
 """
 BASIS — Resource Domain Model
-Stage 8: Introduces normalized OT resource concepts.
+Stage 8:  Introduces normalized OT resource concepts.
+Stage 10: Modbus-backed device resources added (device:chiller-1, device:pump-1).
+          No new ResourceType enum values were required — DEVICE covers generic
+          OT devices regardless of the protocol adapter serving them. This is an
+          intentional design proof: the resource model is protocol-agnostic.
 
 Why Resource exists
 ────────────────────
@@ -196,6 +200,34 @@ _REGISTRY: dict[str, Resource] = {
         name="occupancy",
         zone="main",
         description="Occupancy sensor — main zone headcount detection",
+    ),
+
+    # ── Modbus-backed device resources (Stage 10) ─────────────────────────────
+    # These resources are served by the Modbus TCP adapter (adapters/modbus/).
+    # They use the existing DEVICE type — the resource model has no knowledge
+    # of the underlying protocol. The same resolve_resource() and list_resources()
+    # API exposes them alongside MQTT-backed resources at GET /api/resources.
+    ResourceIdentifier.build(ResourceType.DEVICE, "chiller-1"): Resource(
+        id=ResourceIdentifier.build(ResourceType.DEVICE, "chiller-1"),
+        type=ResourceType.DEVICE,
+        name="chiller-1",
+        zone="plant",
+        description=(
+            "Primary chiller unit — Modbus TCP adapter. "
+            "HR 40001: supply temp setpoint (°C × 10). "
+            "IR 30001: actual supply temp. IR 30002: running status."
+        ),
+    ),
+    ResourceIdentifier.build(ResourceType.DEVICE, "pump-1"): Resource(
+        id=ResourceIdentifier.build(ResourceType.DEVICE, "pump-1"),
+        type=ResourceType.DEVICE,
+        name="pump-1",
+        zone="plant",
+        description=(
+            "Primary circulation pump — Modbus TCP adapter. "
+            "HR 40101: speed setpoint (%). "
+            "IR 30101: flow rate (L/min). IR 30102: running status."
+        ),
     ),
 
     # ── Zone resources ─────────────────────────────────────────────────────────

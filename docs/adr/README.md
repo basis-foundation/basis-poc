@@ -68,6 +68,7 @@ Numbers do not imply priority or importance — they reflect the order in which 
 | [ADR-0006](ADR-0006-local-first-architecture.md) | Local-First Architecture Philosophy | Accepted |
 | [ADR-0007](ADR-0007-wire-compatibility-during-refactors.md) | Preserve Wire Compatibility During Internal Refactors | Accepted |
 | [ADR-0008](ADR-0008-no-kubernetes-dependency.md) | No Kubernetes Dependency | Accepted |
+| [ADR-0009](ADR-0009-protocol-agnostic-adapter-design.md) | Protocol-Agnostic Adapter Design | Accepted |
 
 ---
 
