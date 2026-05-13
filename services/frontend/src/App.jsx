@@ -1,6 +1,9 @@
 /**
  * Basis Foundation — Frontend
- * Stage 4: Role-gated HVAC control commands + live telemetry feedback.
+ * Stage 9: Authenticated telemetry gateway.
+ * useTelemetry now receives token getters so each WebSocket connection carries
+ * a valid Keycloak JWT. Token expiry (code 4001) triggers a silent refresh +
+ * reconnect. Authorization failure (code 4000) surfaces auth_error to the UI.
  */
 
 import { useState, useEffect, useRef } from 'react'
@@ -10,10 +13,11 @@ import { useTelemetry } from './ws/telemetry'
 import TelemetryDashboard, { TOPIC_HVAC } from './components/TelemetryDashboard'
 import ControlPanel from './components/ControlPanel'
 
-// ── WebSocket URL ─────────────────────────────────────────────────────────────
-const WS_URL =
+// ── WebSocket base URL ────────────────────────────────────────────────────────
+// The hook appends /ws/telemetry?token=<JWT> — we pass the base only.
+const WS_BASE_URL =
   (import.meta.env.VITE_API_URL || 'http://localhost:8000')
-    .replace(/^http/, 'ws') + '/ws/telemetry'
+    .replace(/^http/, 'ws')
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -111,8 +115,12 @@ export default function App() {
   })
   const didInit = useRef(false)
 
-  // Single WebSocket connection — shared between TelemetryDashboard and ControlPanel
-  const { telemetry, wsStatus } = useTelemetry(WS_URL)
+  // Single WebSocket connection — shared between TelemetryDashboard and ControlPanel.
+  // getToken returns the current Keycloak access token (fresh on each call).
+  // refreshToken asks Keycloak to issue a new token; called automatically on 4001.
+  const getToken     = () => keycloak.token ?? null
+  const refreshToken = () => keycloak.updateToken(5)
+  const { telemetry, wsStatus } = useTelemetry(WS_BASE_URL, getToken, refreshToken)
 
   // ── Keycloak init ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -188,7 +196,7 @@ export default function App() {
         <h1 style={{ fontSize: '1rem', fontWeight: 700, color: C.text, margin: 0 }}>
           Basis Foundation
         </h1>
-        <span style={{ fontSize: '0.75rem', color: C.muted }}>Stage 5 — Audit Logging</span>
+        <span style={{ fontSize: '0.75rem', color: C.muted }}>Stage 9 — Authenticated Telemetry</span>
         <div style={{ flex: 1 }} />
         <div style={{
           display: 'flex', alignItems: 'center', gap: '0.5rem',

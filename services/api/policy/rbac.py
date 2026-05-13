@@ -2,6 +2,7 @@
 BASIS — Role-Based Access Control Policy
 Stage 7: Maps named actions to the realm roles that may perform them.
 Stage 8: READ_RESOURCES added — viewer, operator, and admin may read the resource registry.
+Stage 9: SUBSCRIBE_TELEMETRY added — all three OT roles may connect to the telemetry gateway.
 
 This is the authoritative role model for BASIS. It replaces the scattered
 require_role("operator", "admin") calls that previously lived in each router.
@@ -75,6 +76,15 @@ _ACTION_ROLES: dict[str, set[str]] = {
 
     # ── Audit log access ───────────────────────────────────────────────────────
     actions.READ_AUDIT_LOG:      {"admin"},
+
+    # ── Telemetry subscription ─────────────────────────────────────────────────
+    # All authenticated OT roles may subscribe. Telemetry is read-only and
+    # visible to every operator, viewer, and admin by design. Restricting
+    # telemetry access to operators would limit the ability of viewers to
+    # monitor system state — the primary use case for the viewer role.
+    # Stage 10+ zone-scoped policies will allow finer-grained restriction
+    # without changing this entry.
+    actions.SUBSCRIBE_TELEMETRY: {"viewer", "operator", "admin"},
 }
 
 

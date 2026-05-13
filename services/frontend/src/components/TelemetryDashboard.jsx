@@ -246,6 +246,7 @@ function WSStatusPill({ status }) {
     connected:    { color: C.green,  bg: C.greenBg,  dot: '●', text: 'Live' },
     connecting:   { color: C.muted,  bg: C.border,   dot: '○', text: 'Connecting…' },
     reconnecting: { color: C.yellow, bg: C.yellowBg, dot: '◌', text: 'Reconnecting…' },
+    auth_error:   { color: C.red,    bg: '#3b1010',  dot: '✕', text: 'Auth Error' },
   }[status] ?? { color: C.muted, bg: C.border, dot: '○', text: status }
 
   return (
