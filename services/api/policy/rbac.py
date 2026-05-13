@@ -1,8 +1,12 @@
 """
 BASIS — Role-Based Access Control Policy
-Stage 7: Maps named actions to the realm roles that may perform them.
-Stage 8: READ_RESOURCES added — viewer, operator, and admin may read the resource registry.
-Stage 9: SUBSCRIBE_TELEMETRY added — all three OT roles may connect to the telemetry gateway.
+Stage 7:  Maps named actions to the realm roles that may perform them.
+Stage 8:  READ_RESOURCES added — viewer, operator, and admin may read the resource registry.
+Stage 9:  SUBSCRIBE_TELEMETRY added — all three OT roles may connect to the telemetry gateway.
+Stage 10: WRITE_MODBUS_SETPOINT added — operator and admin may write Modbus holding registers.
+          Same role boundary as WRITE_HVAC_SETPOINT. Adding a new OT protocol required
+          one new action constant and one new line in this table — no other security
+          code was modified. This is the policy-agnostic design proof.
 
 This is the authoritative role model for BASIS. It replaces the scattered
 require_role("operator", "admin") calls that previously lived in each router.
@@ -76,6 +80,13 @@ _ACTION_ROLES: dict[str, set[str]] = {
 
     # ── Audit log access ───────────────────────────────────────────────────────
     actions.READ_AUDIT_LOG:      {"admin"},
+
+    # ── Modbus adapter commands ────────────────────────────────────────────────
+    # Mirrors the HVAC setpoint boundary: only operators and admins may issue
+    # write commands to OT devices. Viewers observe; they do not control.
+    # The same role model covers both MQTT-backed HVAC and Modbus-backed devices —
+    # the policy table has no knowledge of the underlying protocol.
+    actions.WRITE_MODBUS_SETPOINT: {"operator", "admin"},
 
     # ── Telemetry subscription ─────────────────────────────────────────────────
     # All authenticated OT roles may subscribe. Telemetry is read-only and

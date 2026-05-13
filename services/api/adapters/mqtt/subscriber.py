@@ -1,6 +1,8 @@
 """
 BASIS — MQTT Subscriber Adapter
-Stage 7b: _handle_message now constructs a TelemetryEvent for telemetry topics.
+Stage 7b:  _handle_message now constructs a TelemetryEvent for telemetry topics.
+Stage 10:  MqttAdapter class added — wraps mqtt_listener() in the AdapterBase
+           interface so main.py can manage all protocol adapters identically.
           The TelemetryEvent is used for structured internal logging — the
           broadcaster.broadcast() call is unchanged (WebSocket wire format preserved).
 
@@ -171,3 +173,47 @@ async def mqtt_listener() -> None:
                 exc, RETRY_DELAY, exc_info=True,
             )
             await asyncio.sleep(RETRY_DELAY)
+
+
+# ── AdapterBase wrapper ────────────────────────────────────────────────────────
+
+from adapters.base import AdapterBase  # noqa: E402 — avoids circular import at module top
+
+
+class MqttAdapter(AdapterBase):
+    """
+    AdapterBase wrapper for the MQTT subscriber.
+
+    Wraps the existing mqtt_listener() coroutine in the AdapterBase lifecycle
+    interface so main.py can manage MqttAdapter and ModbusTcpAdapter identically
+    — same start(), same stop(), same log pattern.
+
+    This class does not change how the MQTT listener works. All connection,
+    retry, and message-handling logic remains in mqtt_listener() and
+    _handle_message(). This is a thin lifecycle shell only.
+    """
+
+    adapter_id = "mqtt"
+    protocol   = "mqtt"
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(
+            mqtt_listener(),
+            name=f"adapter-{self.adapter_id}",
+        )
+        log.info(
+            "MqttAdapter started — broker=%s:%d",
+            MQTT_BROKER_HOST, MQTT_BROKER_PORT,
+        )
+
+    async def stop(self) -> None:
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        log.info("MqttAdapter stopped")

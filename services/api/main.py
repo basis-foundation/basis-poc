@@ -30,6 +30,19 @@ Stage 7b: Normalized event models introduced.
          adapters/mqtt/subscriber.py — _handle_message constructs TelemetryEvent internally.
          routers/controls.py — CommandEvent constructed before publish_command(); same
                               dict payload forwarded to broker (wire format unchanged).
+Stage 10: Protocol-agnostic adapter PoC.
+         adapters/base.py       — AdapterBase: start()/stop() lifecycle contract.
+         adapters/mqtt/         — MqttAdapter(AdapterBase) wraps existing mqtt_listener().
+         adapters/modbus/       — ModbusTcpAdapter(AdapterBase): in-memory register bank,
+                                  10s telemetry loop, write_chiller_setpoint/write_pump_speed.
+         domain/resource.py     — device:chiller-1 and device:pump-1 added to registry.
+         policy/actions.py      — WRITE_MODBUS_SETPOINT = "write:modbus:setpoint".
+         policy/rbac.py         — WRITE_MODBUS_SETPOINT → operator, admin.
+         routers/modbus.py      — POST /api/controls/modbus/chiller-1/setpoint,
+                                  POST /api/controls/modbus/pump-1/speed.
+         main.py                — Adapter registry: both adapters started and stopped
+                                  identically via AdapterBase. No protocol-specific
+                                  startup logic.
 Stage 9: Authenticated telemetry gateway.
          domain/session.py  — TelemetrySession: identity-bound frozen model with expiry hook.
          policy/actions.py  — SUBSCRIBE_TELEMETRY and DISCONNECT_TELEMETRY action constants.
@@ -65,7 +78,10 @@ from routers.telemetry  import router as telemetry_router
 from routers.controls   import router as controls_router
 from routers.audit      import router as audit_router
 from routers.resources  import router as resources_router
-from adapters.mqtt.subscriber import mqtt_listener
+from routers.modbus     import router as modbus_router
+from adapters.base import AdapterBase
+from adapters.mqtt.subscriber import MqttAdapter
+from adapters.modbus.adapter  import modbus_adapter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +102,12 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
+        "**Stage 10**: Protocol-agnostic adapter PoC. Modbus TCP adapter runs "
+        "alongside the MQTT adapter — both implement `AdapterBase`. Simulated "
+        "chiller and pump resources appear in `GET /api/resources`. Commands via "
+        "`POST /api/controls/modbus/{device}/{action}` use the same PolicyEngine, "
+        "require_action(), and audit logger as HVAC controls. No security code was "
+        "modified to onboard the new protocol.\n\n"
         "**Stage 9**: Authenticated telemetry gateway. WebSocket connections now "
         "require a Keycloak token via `?token=`. Each session is identity-bound "
         "(TelemetrySession). SUBSCRIBE and DISCONNECT events are audited. "
@@ -102,7 +124,7 @@ app = FastAPI(
         "`GET /api/resources` exposes the OT topology to API consumers.\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.9.1",
+    version="0.10.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -119,43 +141,48 @@ app.add_middleware(
 app.include_router(protected_router)
 app.include_router(telemetry_router)
 app.include_router(controls_router)
+app.include_router(modbus_router)
 app.include_router(audit_router)
 app.include_router(resources_router)
 
-# ── Lifecycle ─────────────────────────────────────────────────────────────────
-_mqtt_task: asyncio.Task | None = None
+# ── Adapter registry ──────────────────────────────────────────────────────────
+# All OT protocol adapters are registered here and managed identically via
+# AdapterBase.start() / stop(). Adding a new protocol = add one entry to this list.
+# No protocol-specific startup logic lives in main.py.
+_adapters: list[AdapterBase] = []
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _mqtt_task
-    log.info("Basis API v0.9.1 starting up (Stage 9 — Authenticated Telemetry Gateway)")
+    global _adapters
+    log.info("Basis API v0.10.0 starting up (Stage 10 — Protocol-Agnostic Adapter PoC)")
     initialize_audit_db()
     log.info("Audit DB initialized")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
     log.info("Frontend origin:    %s", FRONTEND_URL)
-    _mqtt_task = asyncio.create_task(mqtt_listener(), name="mqtt-listener")
-    log.info("MQTT listener task started")
+
+    _adapters = [
+        MqttAdapter(),      # MQTT 3.1.1 — HVAC, CO₂, occupancy telemetry
+        modbus_adapter,     # Modbus TCP  — chiller-1, pump-1 simulation
+    ]
+    for adapter in _adapters:
+        await adapter.start()
+        log.info("Adapter started: %s (protocol=%s)", adapter.adapter_id, adapter.protocol)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global _mqtt_task
-    if _mqtt_task and not _mqtt_task.done():
-        _mqtt_task.cancel()
-        try:
-            await _mqtt_task
-        except asyncio.CancelledError:
-            pass
+    for adapter in reversed(_adapters):
+        await adapter.stop()
     log.info("Basis API shut down cleanly")
 
 
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.9.1", "stage": "9+5b+7b+8", "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.10.0", "stage": "10+9+5b+7b+8", "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -164,8 +191,8 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.9.1",
-        "stage": "9+5b+7b+8",
+        "version": "0.10.0",
+        "stage": "10+9+5b+7b+8",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -178,7 +205,7 @@ def config():
         "keycloak_realm":        KEYCLOAK_REALM,
         "mqtt_broker_host":      MQTT_BROKER_HOST,
         "mqtt_broker_port":      MQTT_BROKER_PORT,
-        "stage": "9+5b+7b+8",
+        "stage": "10+9+5b+7b+8",
         "features": {
             "auth":                True,
             "telemetry":           True,

@@ -1,9 +1,14 @@
 """
 BASIS — Action Constants
-Stage 7: Defines the named actions that subjects may request in BASIS.
-Stage 8: READ_RESOURCES action added for the resource registry endpoint.
-Stage 9: SUBSCRIBE_TELEMETRY and DISCONNECT_TELEMETRY added for the authenticated
-         WebSocket telemetry gateway.
+Stage 7:  Defines the named actions that subjects may request in BASIS.
+Stage 8:  READ_RESOURCES action added for the resource registry endpoint.
+Stage 9:  SUBSCRIBE_TELEMETRY and DISCONNECT_TELEMETRY added for the authenticated
+          WebSocket telemetry gateway.
+Stage 10: WRITE_MODBUS_SETPOINT added for the Modbus TCP adapter command path.
+          This action name deliberately encodes the protocol ("modbus") so that
+          audit records are self-describing — an operator reading the audit log
+          can distinguish a Modbus setpoint write from an HVAC setpoint write
+          without inspecting the detail dict.
 
 Why named actions instead of role strings at endpoints
 ───────────────────────────────────────────────────────
@@ -88,3 +93,17 @@ READ_AUDIT_LOG = "read:audit:log"
 
 SUBSCRIBE_TELEMETRY  = "subscribe:telemetry"
 DISCONNECT_TELEMETRY = "disconnect:telemetry"
+
+# ── Modbus adapter actions ─────────────────────────────────────────────────────
+# Stage 10: Authenticated command path for the Modbus TCP adapter.
+#
+# WRITE_MODBUS_SETPOINT gates all holding-register writes: chiller supply
+# temperature setpoint (HR 40001) and pump speed (HR 40101). A single action
+# covers both writes because both require the same minimum role (operator) and
+# the specific register written is captured in the audit detail dict.
+#
+# This follows the same pattern as WRITE_HVAC_SETPOINT: one action per
+# authorization boundary, not one action per register. The identity model,
+# PolicyEngine, and audit logger are unchanged by the Modbus adapter.
+
+WRITE_MODBUS_SETPOINT = "write:modbus:setpoint"
