@@ -2,6 +2,8 @@
 BASIS — Action Constants
 Stage 7: Defines the named actions that subjects may request in BASIS.
 Stage 8: READ_RESOURCES action added for the resource registry endpoint.
+Stage 9: SUBSCRIBE_TELEMETRY and DISCONNECT_TELEMETRY added for the authenticated
+         WebSocket telemetry gateway.
 
 Why named actions instead of role strings at endpoints
 ───────────────────────────────────────────────────────
@@ -67,3 +69,22 @@ READ_RESOURCES = "read:resources"
 # is enforced now so the contract is established before data exists.
 
 READ_AUDIT_LOG = "read:audit:log"
+
+# ── Telemetry subscription actions ────────────────────────────────────────────
+# Stage 9: Authenticated telemetry gateway.
+#
+# SUBSCRIBE_TELEMETRY is evaluated by the PolicyEngine at WebSocket connection
+# time. All three OT roles (viewer, operator, admin) may subscribe — telemetry
+# is read-only. A denied subscription is recorded in the audit log with
+# outcome="denied" before the WebSocket is closed with code 4000.
+#
+# DISCONNECT_TELEMETRY is NOT enforced by require_action(). It is used only
+# as the action name in the audit record emitted when a session ends. Recording
+# disconnects in the audit log gives operators a complete session lifecycle view:
+#   SUBSCRIBE allowed  →  (session active for N seconds)  →  DISCONNECT
+#
+# These names appear verbatim in audit records. They must remain stable.
+# Treat them as external identifiers, not internal implementation details.
+
+SUBSCRIBE_TELEMETRY  = "subscribe:telemetry"
+DISCONNECT_TELEMETRY = "disconnect:telemetry"

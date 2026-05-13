@@ -30,6 +30,18 @@ Stage 7b: Normalized event models introduced.
          adapters/mqtt/subscriber.py — _handle_message constructs TelemetryEvent internally.
          routers/controls.py — CommandEvent constructed before publish_command(); same
                               dict payload forwarded to broker (wire format unchanged).
+Stage 9: Authenticated telemetry gateway.
+         domain/session.py  — TelemetrySession: identity-bound frozen model with expiry hook.
+         policy/actions.py  — SUBSCRIBE_TELEMETRY and DISCONNECT_TELEMETRY action constants.
+         policy/rbac.py     — SUBSCRIBE_TELEMETRY mapped to viewer, operator, admin.
+         ws_manager.py      — Session-aware broadcaster: _sessions dict replaces _connections list.
+         routers/telemetry.py — Full authentication rewrite: ?token= validation, subject
+                              resolution, PolicyEngine authorization, TelemetrySession binding,
+                              SUBSCRIBE audit event, asyncio expiry watcher (close 4001),
+                              DISCONNECT audit event with session_duration_seconds.
+         Frontend ws/telemetry.js — useTelemetry(wsBaseUrl, getToken, refreshToken):
+                              token appended on each connect; 4001 → refresh + reconnect;
+                              4000 → auth_error status, stop reconnecting.
 Stage 5b: SQLite audit persistence introduced.
          audit/store.py     — SqliteAuditStore (sqlite3 stdlib, asyncio.to_thread writes,
                               WAL mode, indexed schema) and DualAuditStore (composite
@@ -74,7 +86,11 @@ app = FastAPI(
     title="Basis Foundation API",
     description=(
         "Identity-aware access control for building automation and OT systems.\n\n"
-        "**Stage 5b**: SQLite audit persistence. All audit events are now durably "
+        "**Stage 9**: Authenticated telemetry gateway. WebSocket connections now "
+        "require a Keycloak token via `?token=`. Each session is identity-bound "
+        "(TelemetrySession). SUBSCRIBE and DISCONNECT events are audited. "
+        "Token expiry enforces close code 4001; invalid/denied connections receive 4000.\n\n"
+        "**Stage 5b**: SQLite audit persistence. All audit events are durably "
         "stored in a local SQLite database alongside stdout logging. "
         "`GET /api/audit` supports filtering by subject, outcome, action, and resource. "
         "`GET /api/audit/{event_id}` retrieves a single record.\n\n"
@@ -86,7 +102,7 @@ app = FastAPI(
         "`GET /api/resources` exposes the OT topology to API consumers.\n\n"
         "Protected endpoints require a Keycloak Bearer token (click **Authorize**)."
     ),
-    version="0.9.0",
+    version="0.9.1",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -113,7 +129,7 @@ _mqtt_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def startup() -> None:
     global _mqtt_task
-    log.info("Basis API v0.9.0 starting up (Stage 5b — SQLite audit persistence)")
+    log.info("Basis API v0.9.1 starting up (Stage 9 — Authenticated Telemetry Gateway)")
     initialize_audit_db()
     log.info("Audit DB initialized")
     log.info("Keycloak internal:  %s/realms/%s", KEYCLOAK_URL, KEYCLOAK_REALM)
@@ -139,7 +155,7 @@ async def shutdown() -> None:
 # ── Public Routes ─────────────────────────────────────────────────────────────
 @app.get("/", tags=["meta"])
 def root():
-    return {"service": "basis-api", "version": "0.9.0", "stage": "5b+7b+8", "docs": "/docs"}
+    return {"service": "basis-api", "version": "0.9.1", "stage": "9+5b+7b+8", "docs": "/docs"}
 
 
 @app.get("/health", tags=["meta"])
@@ -148,7 +164,8 @@ def health():
     return {
         "status": "ok",
         "service": "basis-api",
-        "version": "0.9.0",
+        "version": "0.9.1",
+        "stage": "9+5b+7b+8",
         "websocket_clients": broadcaster.client_count,
     }
 
@@ -161,7 +178,7 @@ def config():
         "keycloak_realm":        KEYCLOAK_REALM,
         "mqtt_broker_host":      MQTT_BROKER_HOST,
         "mqtt_broker_port":      MQTT_BROKER_PORT,
-        "stage": "5b+7b+8",
+        "stage": "9+5b+7b+8",
         "features": {
             "auth":                True,
             "telemetry":           True,
@@ -175,5 +192,8 @@ def config():
             "resource_model":      True,   # Typed Resource objects; registry-driven validation
             "resource_api":        True,   # GET /api/resources exposes OT topology
             "normalized_events":   True,   # TelemetryEvent + CommandEvent internal models
+            "ws_auth":             True,   # WebSocket JWT auth + TelemetrySession (Stage 9)
+            "ws_audit":            True,   # SUBSCRIBE + DISCONNECT audit events (Stage 9)
+            "ws_expiry":           True,   # Token expiry enforcement — close code 4001 (Stage 9)
         },
     }
