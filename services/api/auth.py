@@ -69,12 +69,16 @@ KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
 # External URL — used for issuer validation.
 # The token's `iss` claim is set by Keycloak from the browser-facing hostname,
 # so it must match what the browser used to reach Keycloak, not the internal hostname.
+# In Codespaces this is the forwarded-port URL (e.g. https://<name>-18080.app.github.dev).
 KEYCLOAK_EXTERNAL_URL = os.getenv("KEYCLOAK_EXTERNAL_URL", "http://localhost:18080")
 
 KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "basis")
 
 JWKS_URL = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
 EXPECTED_ISSUER = f"{KEYCLOAK_EXTERNAL_URL}/realms/{KEYCLOAK_REALM}"
+
+# Logged once at import time so the issuer expectation is visible in startup output.
+log.info("Auth configured — JWKS: %s  expected_issuer: %s", JWKS_URL, EXPECTED_ISSUER)
 
 JWKS_TTL_SECONDS = 300  # refresh JWKS cache every 5 minutes
 
@@ -162,6 +166,22 @@ async def validate_token(token: str) -> dict:
         )
 
     # Step 3: decode and validate
+    # Before full verification, peek at the unverified claims so we can log a
+    # precise failure reason (especially issuer mismatches, which are the most
+    # common cause of auth failures in proxied/Codespaces environments).
+    try:
+        unverified = jwt.get_unverified_claims(token)
+        token_iss  = unverified.get("iss", "(missing)")
+        token_sub  = unverified.get("preferred_username") or unverified.get("sub", "(unknown)")
+        if token_iss != EXPECTED_ISSUER:
+            log.warning(
+                "JWT issuer mismatch — expected=%r  got=%r  subject=%s",
+                EXPECTED_ISSUER, token_iss, token_sub,
+            )
+    except Exception:
+        token_iss = "(unreadable)"
+        token_sub = "(unknown)"
+
     try:
         payload = jwt.decode(
             token,
@@ -175,7 +195,11 @@ async def validate_token(token: str) -> dict:
         return payload
 
     except JWTError as exc:
-        log.warning("JWT validation failed for kid=%s: %s", kid, exc)
+        # Log the specific failure so it's diagnosable in docker compose logs api.
+        log.warning(
+            "JWT validation failed — kid=%s  iss=%r  subject=%s: %s",
+            kid, token_iss, token_sub, exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token is invalid or has expired.",
