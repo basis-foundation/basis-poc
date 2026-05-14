@@ -27,14 +27,22 @@ export async function apiFetch(path, opts = {}) {
     return { ok: false, status: 0, data: null }
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${keycloak.token}`,
-      ...opts.headers,
-    },
-  })
+  let response
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...opts,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${keycloak.token}`,
+        ...opts.headers,
+      },
+    })
+  } catch (networkErr) {
+    // Network failure (CORS, unreachable host, etc.) — surface as a structured error
+    // rather than letting the promise reject and silently hang callers.
+    console.error(`apiFetch network error [${path}]:`, networkErr)
+    return { ok: false, status: 0, data: null, networkError: String(networkErr) }
+  }
 
   if (response.status === 401) {
     // The API rejected our token — log out and start fresh

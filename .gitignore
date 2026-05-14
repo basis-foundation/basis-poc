@@ -32,6 +32,10 @@ logs/
 *.sqlite3
 data/
 
+# ── Simulator runtime state ───────────────────────────────────────────────────
+# Persisted setpoint survives container restarts but is not source-controlled.
+.setpoint_state.json
+
 # ── Certificates and private keys ─────────────────────────────────────────────
 # When TLS is added (Stage 9), generated certs go in infra/certs/ and must
 # never be committed. These patterns provide the safety net.
