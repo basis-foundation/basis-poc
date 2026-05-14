@@ -67,7 +67,10 @@ get_admin_token() {
   local attempt=1
   local token
 
-  log "Obtaining Keycloak admin token..."
+  # Progress messages go to stderr so that callers can capture the token cleanly:
+  #   admin_token=$(get_admin_token)
+  # captures only the token line; all status output appears in the terminal.
+  log "Obtaining Keycloak admin token..." >&2
 
   while [ $attempt -le $max_attempts ]; do
     token=$(curl -sf -X POST \
@@ -81,17 +84,17 @@ get_admin_token() {
       2>/dev/null) || true
 
     if [ -n "${token:-}" ]; then
-      log "  Admin token obtained."
-      echo "$token"
+      log "  Admin token obtained." >&2
+      echo "$token"   # stdout only — this is what the caller captures
       return 0
     fi
 
-    log "  [${attempt}/${max_attempts}] Waiting for admin API..."
+    log "  [${attempt}/${max_attempts}] Waiting for admin API..." >&2
     sleep 5
     attempt=$((attempt + 1))
   done
 
-  log "✗ Could not obtain Keycloak admin token after ${max_attempts} attempts."
+  log "✗ Could not obtain Keycloak admin token after ${max_attempts} attempts." >&2
   return 1
 }
 
@@ -104,18 +107,30 @@ patch_keycloak_for_codespaces() {
   local attempt=1
   local admin_token client_json client_count client_uuid http_status
 
+  # Temp files keep all intermediate data off stdin/pipes.
+  # Using pipes for large JSON blobs or Python scripts risks buffering issues
+  # and stdin conflicts; files are unambiguous.
+  local tmp_client tmp_script tmp_updated tmp_resp
+  tmp_client=$(mktemp)
+  tmp_script=$(mktemp)
+  tmp_updated=$(mktemp)
+  tmp_resp=$(mktemp)
+  # Guaranteed cleanup whether we return 0 or 1 (bash RETURN trap)
+  trap 'rm -f "$tmp_client" "$tmp_script" "$tmp_updated" "$tmp_resp"' RETURN
+
+  # Get admin token — progress goes to stderr, token goes to stdout
   admin_token=$(get_admin_token) || return 1
 
   log "Waiting for basis-frontend client..."
 
   while [ $attempt -le $max_attempts ]; do
-    client_json=$(curl -sf \
+    client_json=$(curl -s \
       -H "Authorization: Bearer $admin_token" \
       "http://localhost:18080/admin/realms/basis/clients?clientId=basis-frontend" \
       2>/dev/null) || true
 
     # Validate: must be a non-empty JSON array
-    client_count=$(echo "${client_json:-[]}" \
+    client_count=$(printf '%s' "${client_json:-[]}" \
       | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null \
       || echo "0")
 
@@ -135,11 +150,14 @@ patch_keycloak_for_codespaces() {
     return 1
   fi
 
+  # Write to temp file — all subsequent Python steps read from here, not stdin
+  printf '%s' "$client_json" > "$tmp_client"
+
   # Extract and validate the client UUID
-  client_uuid=$(echo "$client_json" \
-    | python3 -c "
+  client_uuid=$(python3 -c "
 import json, sys
-clients = json.load(sys.stdin)
+with open(sys.argv[1]) as f:
+    clients = json.load(f)
 if not clients:
     sys.exit(1)
 c = clients[0]
@@ -147,36 +165,36 @@ if c.get('clientId') != 'basis-frontend':
     print(f'ERROR: unexpected clientId {c.get(\"clientId\")!r}', file=sys.stderr)
     sys.exit(1)
 print(c['id'])
-" 2>/dev/null) || true
-
-  if [ -z "${client_uuid:-}" ]; then
-    log "✗ Could not extract a valid UUID from basis-frontend client response."
-    return 1
-  fi
+" "$tmp_client") || { log "✗ Could not extract a valid UUID from basis-frontend client."; return 1; }
 
   log "Patching basis-frontend (id: ${client_uuid})"
-  log "  Adding redirect URI: ${fe_url}"
+  log "  Frontend URL: ${fe_url}"
 
-  # Build updated client JSON. fe_url passed via env var to avoid
-  # shell-interpolation issues inside the Python string literal.
-  local updated_json
-  updated_json=$(BASIS_FE_URL="$fe_url" python3 -c "
+  # Write the transform script to a temp file.
+  # Three URI forms cover the Keycloak OIDC redirect check:
+  #   exact:          https://name-5173.app.github.dev
+  #   trailing slash: https://name-5173.app.github.dev/
+  #   wildcard:       https://name-5173.app.github.dev/*
+  cat > "$tmp_script" << 'PYEOF'
 import json, sys, os
 
-raw = sys.stdin.read()
-clients = json.loads(raw)
+with open(os.environ['TMP_IN']) as f:
+    clients = json.load(f)
+
 if not clients:
     print('ERROR: empty client list', file=sys.stderr)
     sys.exit(1)
 
 client = clients[0]
 if client.get('clientId') != 'basis-frontend':
-    print(f'ERROR: unexpected clientId {client.get(\"clientId\")!r}', file=sys.stderr)
+    print(f'ERROR: unexpected clientId {client.get("clientId")!r}', file=sys.stderr)
     sys.exit(1)
 
-fe_url      = os.environ['BASIS_FE_URL']
-new_uris    = [fe_url + '/*', fe_url]
-new_origins = [fe_url]
+fe_url   = os.environ['BASIS_FE_URL']
+base_url = fe_url.rstrip('/')
+
+new_uris    = [base_url, base_url + '/', base_url + '/*']
+new_origins = [base_url]
 
 for u in new_uris:
     if u not in client.get('redirectUris', []):
@@ -186,31 +204,100 @@ for o in new_origins:
     if o not in client.get('webOrigins', []):
         client.setdefault('webOrigins', []).append(o)
 
-print(json.dumps(client))
-" <<< "$client_json") || { log "✗ Failed to build updated client JSON."; return 1; }
+with open(os.environ['TMP_OUT'], 'w') as f:
+    json.dump(client, f)
+PYEOF
 
-  if [ -z "${updated_json:-}" ]; then
+  TMP_IN="$tmp_client" TMP_OUT="$tmp_updated" BASIS_FE_URL="$fe_url" \
+    python3 "$tmp_script" \
+    || { log "✗ Failed to build updated client JSON."; return 1; }
+
+  if [ ! -s "$tmp_updated" ]; then
     log "✗ Updated client JSON is empty — aborting PUT."
     return 1
   fi
 
-  # PUT the updated client. Keycloak returns 204 No Content on success.
-  http_status=$(echo "$updated_json" | curl -sf -X PUT \
+  # PUT the updated client representation to Keycloak.
+  # No -f flag: we need the response body on failure for diagnostics.
+  # Keycloak returns 204 No Content on success, empty body.
+  log "Sending PUT to Keycloak Admin API..."
+  http_status=$(curl -s -X PUT \
     -H "Authorization: Bearer $admin_token" \
     -H "Content-Type: application/json" \
-    -d @- \
-    -o /dev/null \
+    --data-binary "@$tmp_updated" \
+    -o "$tmp_resp" \
     -w "%{http_code}" \
-    "http://localhost:18080/admin/realms/basis/clients/$client_uuid" \
-    2>/dev/null) || true
+    "http://localhost:18080/admin/realms/basis/clients/$client_uuid")
 
-  if [ "${http_status:-0}" = "204" ]; then
-    log "Redirect URI patched successfully (HTTP 204)."
-  else
-    log "✗ Keycloak client update returned HTTP ${http_status:-unknown} (expected 204)."
+  if [ "${http_status:-0}" != "204" ]; then
+    log "✗ Keycloak PUT returned HTTP ${http_status:-unknown} (expected 204)."
+    log "  Response body: $(cat "$tmp_resp" 2>/dev/null || echo '(empty)')"
     log "  Run: docker compose logs keycloak"
     return 1
   fi
+
+  log "PUT accepted (HTTP 204). Verifying persisted configuration..."
+
+  # Verification: re-GET the client and confirm all required URIs were written.
+  # Fails loudly if any URI is missing — do not silently continue.
+  local verify_json
+  verify_json=$(curl -s \
+    -H "Authorization: Bearer $admin_token" \
+    "http://localhost:18080/admin/realms/basis/clients?clientId=basis-frontend" \
+    2>/dev/null) || true
+
+  printf '%s' "$verify_json" > "$tmp_client"
+
+  cat > "$tmp_script" << 'PYEOF'
+import json, sys, os
+
+with open(os.environ['TMP_IN']) as f:
+    clients = json.load(f)
+
+if not clients:
+    print('ERROR: empty verification response', file=sys.stderr)
+    sys.exit(1)
+
+client = clients[0]
+fe_url   = os.environ['BASIS_FE_URL']
+base_url = fe_url.rstrip('/')
+
+required_uris    = [base_url, base_url + '/', base_url + '/*']
+required_origins = [base_url]
+actual_uris      = client.get('redirectUris', [])
+actual_origins   = client.get('webOrigins', [])
+
+missing_uris    = [u for u in required_uris    if u not in actual_uris]
+missing_origins = [o for o in required_origins if o not in actual_origins]
+
+if missing_uris or missing_origins:
+    if missing_uris:
+        print(f'ERROR: redirectUris missing after PUT: {missing_uris}', file=sys.stderr)
+    if missing_origins:
+        print(f'ERROR: webOrigins missing after PUT: {missing_origins}', file=sys.stderr)
+    sys.exit(1)
+
+# Print final verified state so it appears in the terminal log
+print('    redirectUris:')
+for u in sorted(actual_uris):
+    print(f'      {u}')
+print('    webOrigins:')
+for o in sorted(actual_origins):
+    print(f'      {o}')
+PYEOF
+
+  local verify_output
+  verify_output=$(TMP_IN="$tmp_client" BASIS_FE_URL="$fe_url" python3 "$tmp_script") \
+    || {
+      log "✗ Verification FAILED — Codespaces URIs not found in Keycloak after PUT."
+      log "  OIDC login redirects will fail until this is resolved."
+      log "  Check: docker compose logs keycloak"
+      return 1
+    }
+
+  log "Verification passed. basis-frontend final configuration:"
+  echo "$verify_output"
+  log "Redirect URI patching complete."
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────

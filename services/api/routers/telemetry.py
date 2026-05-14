@@ -69,6 +69,16 @@ router = APIRouter(tags=["telemetry"])
 _ANON = "anonymous"
 
 
+def _ws_origin(ws: WebSocket) -> str:
+    """Extract the Origin header from the WebSocket upgrade request, or '(none)'."""
+    return dict(ws.headers).get("origin", "(none)")
+
+
+def _ws_host(ws: WebSocket) -> str:
+    """Extract the Host header from the WebSocket upgrade request."""
+    return dict(ws.headers).get("host", "(none)")
+
+
 async def _expiry_watcher(ws: WebSocket, session: TelemetrySession) -> None:
     """
     Background task: sleep until the session token expires, then close the connection.
@@ -119,18 +129,28 @@ async def ws_telemetry(
     # that is the correct behavior for WebSocket authentication.
     await ws.accept()
 
-    # ── Step 2: Resolve client IP for audit trail ─────────────────────────────
+    # ── Step 2: Resolve client IP and log connection attempt ─────────────────
     client_ip: Optional[str] = None
     headers = dict(ws.headers)
     if "x-forwarded-for" in headers:
-        # Reverse proxy case — take the first (leftmost) IP
+        # Reverse proxy / Codespaces forwarding — take the leftmost (client) IP
         client_ip = headers["x-forwarded-for"].split(",")[0].strip()
     elif ws.client:
         client_ip = ws.client.host
 
+    origin = _ws_origin(ws)
+    host   = _ws_host(ws)
+    log.info(
+        "WS connect — ip=%s  origin=%s  host=%s  token=%s",
+        client_ip, origin, host, "present" if token else "MISSING",
+    )
+
     # ── Step 3: Validate token ────────────────────────────────────────────────
     if not token:
-        log.warning("WS rejected — no token provided (ip=%s)", client_ip)
+        log.warning(
+            "WS rejected (4000) — no token provided  origin=%s  ip=%s",
+            origin, client_ip,
+        )
         await audit_logger.record(AuditEvent(
             subject_id=_ANON,
             subject_name=_ANON,
@@ -146,7 +166,13 @@ async def ws_telemetry(
     try:
         payload = await validate_token(token)
     except Exception as exc:
-        log.warning("WS rejected — token validation failed (ip=%s): %s", client_ip, exc)
+        # validate_token raises HTTPException; log its detail so the exact reason
+        # (issuer mismatch, expired, bad signature, ...) is visible in logs.
+        detail = getattr(exc, "detail", str(exc))
+        log.warning(
+            "WS rejected (4000) — token validation failed  origin=%s  ip=%s: %s",
+            origin, client_ip, detail,
+        )
         await audit_logger.record(AuditEvent(
             subject_id=_ANON,
             subject_name=_ANON,
@@ -154,7 +180,7 @@ async def ws_telemetry(
             action=actions.SUBSCRIBE_TELEMETRY,
             endpoint="WS /ws/telemetry",
             outcome="denied",
-            reason="Token validation failed.",
+            reason=f"Token validation failed: {detail}",
         ))
         await ws.close(code=4000)
         return
@@ -165,8 +191,10 @@ async def ws_telemetry(
 
     if not result.allowed:
         log.warning(
-            "WS authorization denied — subject='%s' roles=%s action='%s' reason='%s'",
-            subject.name, subject.roles, actions.SUBSCRIBE_TELEMETRY, result.reason,
+            "WS rejected (4000) — authorization denied  subject='%s'  roles=%s  "
+            "action='%s'  reason='%s'  origin=%s",
+            subject.name, subject.roles, actions.SUBSCRIBE_TELEMETRY,
+            result.reason, origin,
         )
         await audit_logger.record(AuditEvent(
             subject_id=subject.id,
@@ -181,53 +209,71 @@ async def ws_telemetry(
         await ws.close(code=4000)
         return
 
-    # ── Step 5: Build TelemetrySession ────────────────────────────────────────
-    iat = payload.get("iat", 0)
-    exp = payload.get("exp", 0)
-    session = TelemetrySession(
-        subject_id=subject.id,
-        subject_name=subject.name,
-        subject_type=subject.type.value,
-        subject_roles=subject.roles,
-        issued_at=datetime.fromtimestamp(iat, tz=timezone.utc),
-        expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
-        client_ip=client_ip,
-        # zone: None — populated in a future stage via ?zone= query param
-    )
+    # ── Steps 5–8: Session setup ──────────────────────────────────────────────
+    # Wrapped in try/except to guarantee a clean 4000 close on any unexpected
+    # error here. Without this guard, an exception in broadcaster.connect or
+    # create_task escapes the function entirely — FastAPI then closes the socket
+    # with a non-application code (1011 or 1006) which the frontend interprets
+    # as a transient network failure and enters an infinite reconnect loop.
+    try:
+        # Step 5: Build TelemetrySession
+        iat = payload.get("iat", 0)
+        exp = payload.get("exp", 0)
+        session = TelemetrySession(
+            subject_id=subject.id,
+            subject_name=subject.name,
+            subject_type=subject.type.value,
+            subject_roles=subject.roles,
+            issued_at=datetime.fromtimestamp(iat, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+            client_ip=client_ip,
+            # zone: None — populated in a future stage via ?zone= query param
+        )
 
-    # ── Step 6: Register with broadcaster (sends snapshot) ───────────────────
-    await broadcaster.connect(ws, session)
+        # Step 6: Register with broadcaster (sends snapshot)
+        await broadcaster.connect(ws, session)
 
-    # ── Step 7: Emit SUBSCRIBE allowed audit event ────────────────────────────
-    await audit_logger.record(AuditEvent(
-        subject_id=subject.id,
-        subject_name=subject.name,
-        subject_type=subject.type.value,
-        subject_roles=subject.roles,
-        action=actions.SUBSCRIBE_TELEMETRY,
-        endpoint="WS /ws/telemetry",
-        outcome="allowed",
-        detail={
-            "session_id":  session.session_id,
-            "client_ip":   client_ip,
-            "zone":        session.zone,
-            "expires_at":  session.expires_at.isoformat(),
-        },
-    ))
+        # Step 7: Emit SUBSCRIBE allowed audit event
+        await audit_logger.record(AuditEvent(
+            subject_id=subject.id,
+            subject_name=subject.name,
+            subject_type=subject.type.value,
+            subject_roles=subject.roles,
+            action=actions.SUBSCRIBE_TELEMETRY,
+            endpoint="WS /ws/telemetry",
+            outcome="allowed",
+            detail={
+                "session_id":  session.session_id,
+                "client_ip":   client_ip,
+                "origin":      origin,
+                "zone":        session.zone,
+                "expires_at":  session.expires_at.isoformat(),
+            },
+        ))
 
-    log.info(
-        "WS session started — session=%s subject='%s' roles=%s ip=%s",
-        session.session_id, subject.name, subject.roles, client_ip,
-    )
+        log.info(
+            "WS session started — session=%s  subject='%s'  roles=%s  "
+            "origin=%s  ip=%s",
+            session.session_id, subject.name, subject.roles, origin, client_ip,
+        )
 
-    # ── Step 8: Start token expiry watcher ────────────────────────────────────
-    expiry_task = asyncio.create_task(
-        _expiry_watcher(ws, session),
-        name=f"expiry-{session.session_id}",
-    )
+        # Step 8: Start token expiry watcher
+        expiry_task = asyncio.create_task(
+            _expiry_watcher(ws, session),
+            name=f"expiry-{session.session_id}",
+        )
+
+    except Exception as exc:
+        log.error(
+            "WS session setup failed — subject='%s'  origin=%s  ip=%s: %s",
+            subject.name, origin, client_ip, exc,
+            exc_info=True,
+        )
+        await ws.close(code=4000)
+        return
 
     # Track wall-clock session duration for the DISCONNECT audit event
-    connected_at  = datetime.now(timezone.utc)
+    connected_at      = datetime.now(timezone.utc)
     disconnect_reason = "client_disconnect"
 
     # ── Step 9: Read loop ─────────────────────────────────────────────────────
@@ -244,14 +290,14 @@ async def ws_telemetry(
         else:
             disconnect_reason = "client_disconnect"
         log.info(
-            "WS disconnect — session=%s code=%s reason=%s",
+            "WS disconnect — session=%s  code=%s  reason=%s",
             session.session_id, code, disconnect_reason,
         )
 
     except Exception as exc:
         disconnect_reason = "error"
-        log.debug(
-            "WS closed unexpectedly — session=%s: %s",
+        log.warning(
+            "WS closed with unexpected error — session=%s: %s",
             session.session_id, exc,
         )
 
@@ -271,13 +317,13 @@ async def ws_telemetry(
             endpoint="WS /ws/telemetry",
             outcome="disconnected",
             detail={
-                "session_id":              session.session_id,
-                "disconnect_reason":       disconnect_reason,
+                "session_id":               session.session_id,
+                "disconnect_reason":        disconnect_reason,
                 "session_duration_seconds": round(session_duration, 1),
             },
         ))
 
         log.info(
-            "WS session ended — session=%s subject='%s' duration=%.1fs reason=%s",
+            "WS session ended — session=%s  subject='%s'  duration=%.1fs  reason=%s",
             session.session_id, subject.name, session_duration, disconnect_reason,
         )

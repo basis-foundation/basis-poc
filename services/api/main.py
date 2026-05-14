@@ -162,6 +162,7 @@ async def startup() -> None:
     log.info("Keycloak external:  %s/realms/%s", KEYCLOAK_EXTERNAL_URL, KEYCLOAK_REALM)
     log.info("MQTT broker:        %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT)
     log.info("Frontend origin:    %s", FRONTEND_URL)
+    log.info("CORS allow_origins: %s", [FRONTEND_URL, "http://localhost:5173"])
 
     _adapters = [
         MqttAdapter(),      # MQTT 3.1.1 — HVAC, CO₂, occupancy telemetry
