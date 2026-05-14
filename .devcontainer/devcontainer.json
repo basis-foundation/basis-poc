@@ -12,10 +12,12 @@
 
   "name": "BASIS — OT Identity Control Plane",
 
-  // Ubuntu 22.04 base with Docker-in-Docker: lets us run the full
+  // Ubuntu 22.04 (Jammy) base with Docker-in-Docker: lets us run the full
   // Docker Compose stack inside the Codespace without any changes
   // to the existing compose configuration or service Dockerfiles.
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+  // Note: Microsoft retired the "ubuntu-22.04" tag — the canonical tag is the
+  // OS codename "jammy". See: https://mcr.microsoft.com/en-us/artifact/mar/devcontainers/base/tags
+  "image": "mcr.microsoft.com/devcontainers/base:jammy",
 
   "features": {
     // Docker-in-Docker v2 — includes Compose v2 (docker compose)
