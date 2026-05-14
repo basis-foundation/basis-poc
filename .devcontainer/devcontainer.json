@@ -1,0 +1,88 @@
+{
+  // BASIS — OT Identity Control Plane
+  // Dev container for GitHub Codespaces and VS Code Dev Containers.
+  //
+  // Purpose: educational onboarding, architecture exploration, reproducible demos.
+  // This is NOT a production deployment — the local-first, Docker Compose-based
+  // architecture is unchanged. Codespaces is a convenience layer for demos.
+  //
+  // First-time startup takes 3–5 minutes (image pulls + builds).
+  // Keycloak alone takes 60–90 seconds to complete realm import.
+  // All services start automatically — no manual commands required.
+
+  "name": "BASIS — OT Identity Control Plane",
+
+  // Ubuntu 22.04 base with Docker-in-Docker: lets us run the full
+  // Docker Compose stack inside the Codespace without any changes
+  // to the existing compose configuration or service Dockerfiles.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+  "features": {
+    // Docker-in-Docker v2 — includes Compose v2 (docker compose)
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+
+  // ── Lifecycle hooks ──────────────────────────────────────────────────────────
+
+  // postCreateCommand runs once when the Codespace is first created.
+  // Copies .env, rewrites URLs for Codespaces, builds and starts all services,
+  // waits for Keycloak, and patches the OIDC client redirect URIs.
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh 2>&1 | tee /tmp/basis-setup.log",
+
+  // postStartCommand runs on every Codespace resume/restart.
+  // Docker-in-Docker state does not persist across restarts, so services
+  // must be brought back up. Images are already built — this is fast (~60s for KC).
+  "postStartCommand": "bash .devcontainer/scripts/post-start.sh 2>&1 | tee /tmp/basis-start.log",
+
+  // ── Port forwarding ──────────────────────────────────────────────────────────
+  // Ports are forwarded to Codespaces URLs automatically.
+  // In Codespaces: https://{name}-{port}.app.github.dev
+  "forwardPorts": [5173, 8000, 18080, 1883, 9001],
+
+  "portsAttributes": {
+    "5173": {
+      "label": "Operator Console (React)",
+      "onAutoForward": "openBrowser"
+    },
+    "8000": {
+      "label": "API / Swagger UI",
+      "onAutoForward": "silent"
+    },
+    "18080": {
+      "label": "Keycloak (Identity Provider)",
+      "onAutoForward": "silent"
+    },
+    "1883": {
+      "label": "MQTT Broker",
+      "onAutoForward": "silent"
+    },
+    "9001": {
+      "label": "MQTT over WebSocket",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // ── VS Code customizations ───────────────────────────────────────────────────
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Docker and Compose management in VS Code
+        "ms-azuretools.vscode-docker",
+        // Python support for API and simulator code
+        "ms-python.python",
+        // JavaScript/React support for the frontend
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
+      ],
+      "settings": {
+        // Open README on first launch to orient the user
+        "workbench.startupEditor": "readme"
+      }
+    }
+  },
+
+  // Run as the default vscode user (non-root, standard for devcontainers)
+  "remoteUser": "vscode"
+}

@@ -8,8 +8,48 @@ The platform runs entirely on Docker Compose. No cloud. No Kubernetes. No extern
 
 ---
 
+## Try It in GitHub Codespaces
+
+The fastest way to explore BASIS is in a GitHub Codespace. No local Docker setup required.
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/basis-foundation/basis-poc)
+
+**Expected experience:**
+
+1. Click the badge above and wait for the Codespace to initialize (3–5 minutes on first start).
+2. The environment builds and starts all services automatically — no commands to run.
+3. Keycloak takes an additional 60–90 seconds to complete realm import. Wait for the setup log to confirm readiness.
+4. The Operator Console opens automatically in your browser (port 5173).
+5. Log in as any of the three demo users and explore the control plane.
+
+**Demo credentials** (password: `demo123` for all):
+
+| User    | Role     | What you can do                             |
+| ------- | -------- | ------------------------------------------- |
+| `alice` | viewer   | Live telemetry dashboard only               |
+| `bob`   | operator | Telemetry + HVAC setpoint + Modbus commands |
+| `carol` | admin    | Full access + audit log                     |
+
+**5-minute demo walkthrough:**
+
+1. Log in as `bob` (operator). Watch live HVAC, CO₂, and occupancy telemetry arrive via WebSocket.
+2. Use the HVAC setpoint slider to issue a temperature command. Observe the temperature drift in the telemetry card.
+3. Log out. Log in as `alice` (viewer). The control panel is locked — a direct API call also returns 403.
+4. Log in as `carol` (admin). Navigate to `GET /api/audit` via the Swagger UI to inspect the audit trail for bob's command.
+5. Read `docs/architecture/overview.md` and `docs/adr/` for the architectural reasoning behind each design decision.
+
+**Codespaces notes:**
+
+- Startup is slower than local Docker because images are pulled and built on the Codespace VM.
+- Subsequent restarts are faster (~60s, dominated by Keycloak) since images are cached.
+- All traffic stays within the Codespace — nothing is sent to external services.
+- The Codespace environment is a convenience layer; the underlying BASIS architecture is unchanged.
+
+---
+
 ## Table of Contents
 
+- [Try It in GitHub Codespaces](#try-it-in-github-codespaces)
 - [What BASIS Is and Is Not](#what-basis-is-and-is-not)
 - [Problem Statement](#problem-statement)
 - [The Control Plane Model](#the-control-plane-model)
@@ -21,6 +61,7 @@ The platform runs entirely on Docker Compose. No cloud. No Kubernetes. No extern
 - [Demo Role Matrix](#demo-role-matrix)
 - [Potential Future Applications](#potential-future-applications)
 - [Local Development Setup](#local-development-setup)
+- [GitHub Codespaces Setup](#github-codespaces-setup)
 - [Security Design Decisions](#security-design-decisions)
 - [Architecture Documentation](#architecture-documentation)
 - [Architecture Decision Records](#architecture-decision-records)
@@ -66,12 +107,12 @@ BASIS explores what a properly identity-aware OT control plane looks like: one w
 
 ## The Control Plane Model
 
-In networking, a control plane governs *how* traffic should flow — it makes decisions. The data plane actually moves packets.
+In networking, a control plane governs _how_ traffic should flow — it makes decisions. The data plane actually moves packets.
 
 BASIS applies this separation to OT:
 
 - The **data plane** is the physical layer: MQTT brokers, Modbus buses, BACnet/IP networks, sensors, actuators. These move measurements and commands.
-- The **control plane** is BASIS: identity verification, authorization policy, command gating, and audit. It decides *who may do what to which device* before anything reaches the data plane.
+- The **control plane** is BASIS: identity verification, authorization policy, command gating, and audit. It decides _who may do what to which device_ before anything reaches the data plane.
 
 Without a control plane, OT systems authenticate (if at all) at the protocol level — a Modbus master can issue any write to any register it can reach. BASIS intercepts at the API boundary: no command reaches the protocol layer until the PolicyEngine evaluates it against the role table and emits an audit record.
 
@@ -79,14 +120,14 @@ This model is **protocol-agnostic by design.** The same PolicyEngine, the same `
 
 ### Core concepts
 
-| Concept | Role in BASIS |
-|---|---|
-| **Subject** | Who is acting. Parsed from the JWT at the auth boundary. Typed: HUMAN, DEVICE, SERVICE, GATEWAY, AGENT. |
-| **Action** | What is being attempted. Named constants like `write:hvac:setpoint`, `write:modbus:setpoint`, `read:audit:log`. Stable — they appear verbatim in audit records. |
-| **Resource** | What is being acted on. Typed objects in a registry: HVAC controllers, sensors, devices, zones. |
-| **PolicyEngine** | Chain-of-responsibility evaluator. Each policy in the chain may allow, deny, or pass. |
-| **RoleBasedPolicy** | The current policy. Maps actions to the roles that may perform them. One table, one place. |
-| **AuditEvent** | Immutable record of every authorization decision and command dispatch. Written to stdout and SQLite. |
+| Concept             | Role in BASIS                                                                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Subject**         | Who is acting. Parsed from the JWT at the auth boundary. Typed: HUMAN, DEVICE, SERVICE, GATEWAY, AGENT.                                                         |
+| **Action**          | What is being attempted. Named constants like `write:hvac:setpoint`, `write:modbus:setpoint`, `read:audit:log`. Stable — they appear verbatim in audit records. |
+| **Resource**        | What is being acted on. Typed objects in a registry: HVAC controllers, sensors, devices, zones.                                                                 |
+| **PolicyEngine**    | Chain-of-responsibility evaluator. Each policy in the chain may allow, deny, or pass.                                                                           |
+| **RoleBasedPolicy** | The current policy. Maps actions to the roles that may perform them. One table, one place.                                                                      |
+| **AuditEvent**      | Immutable record of every authorization decision and command dispatch. Written to stdout and SQLite.                                                            |
 
 ---
 
@@ -94,14 +135,14 @@ This model is **protocol-agnostic by design.** The same PolicyEngine, the same `
 
 ### Components
 
-| Service | Technology | Role |
-|---|---|---|
-| **Identity Provider** | Keycloak 23 | OIDC/OAuth2 authority. Issues RS256-signed JWTs. Owns the role model. |
-| **API Gateway** | FastAPI 0.10 | Validates JWTs, evaluates PolicyEngine, bridges adapters to WebSocket. |
-| **Message Broker** | Mosquitto 2.0 | MQTT broker. Internal bus for HVAC/sensor telemetry and commands. Credentials required. |
-| **OT Adapters** | Python | MqttAdapter (HVAC, CO₂, occupancy) and ModbusTcpAdapter (chiller, pump). Both implement `AdapterBase`. |
-| **OT Simulator** | Python | Simulates HVAC and environmental sensors. Publishes MQTT telemetry, subscribes to commands. |
-| **Operator Console** | React + Vite | Browser SPA. OIDC login via PKCE, live telemetry dashboard, role-gated control panel. |
+| Service               | Technology    | Role                                                                                                   |
+| --------------------- | ------------- | ------------------------------------------------------------------------------------------------------ |
+| **Identity Provider** | Keycloak 23   | OIDC/OAuth2 authority. Issues RS256-signed JWTs. Owns the role model.                                  |
+| **API Gateway**       | FastAPI 0.10  | Validates JWTs, evaluates PolicyEngine, bridges adapters to WebSocket.                                 |
+| **Message Broker**    | Mosquitto 2.0 | MQTT broker. Internal bus for HVAC/sensor telemetry and commands. Credentials required.                |
+| **OT Adapters**       | Python        | MqttAdapter (HVAC, CO₂, occupancy) and ModbusTcpAdapter (chiller, pump). Both implement `AdapterBase`. |
+| **OT Simulator**      | Python        | Simulates HVAC and environmental sensors. Publishes MQTT telemetry, subscribes to commands.            |
+| **Operator Console**  | React + Vite  | Browser SPA. OIDC login via PKCE, live telemetry dashboard, role-gated control panel.                  |
 
 All services run locally via Docker Compose. No cloud dependency. No Kubernetes.
 
@@ -134,7 +175,7 @@ graph TD
 
 ![Admin dashboard showing live HVAC, CO₂, and occupancy telemetry cards alongside the HVAC setpoint control panel](docs/screenshots/admin-dashboard.png)
 
-*Carol (admin) logged in. All three telemetry cards are receiving live data over an authenticated WebSocket. The HVAC control panel is unlocked because her JWT carries the `admin` realm role.*
+_Carol (admin) logged in. All three telemetry cards are receiving live data over an authenticated WebSocket. The HVAC control panel is unlocked because her JWT carries the `admin` realm role._
 
 ### Data Flow Summary
 
@@ -152,26 +193,26 @@ The API is the sole trust boundary for commands. No client publishes directly to
 
 Keycloak hosts a realm named `basis`. Two clients are registered:
 
-| Client | Type | Purpose |
-|---|---|---|
-| `basis-frontend` | Public (PKCE) | Browser SPA. Initiates OIDC auth code flow. |
-| `basis-api` | Bearer-only | API reference. Token validation only, no login flow. |
+| Client           | Type          | Purpose                                              |
+| ---------------- | ------------- | ---------------------------------------------------- |
+| `basis-frontend` | Public (PKCE) | Browser SPA. Initiates OIDC auth code flow.          |
+| `basis-api`      | Bearer-only   | API reference. Token validation only, no login flow. |
 
 ### Roles
 
 Three realm roles are defined. They are additive — each level grants access to everything at lower levels as encoded in the `_ACTION_ROLES` table in `policy/rbac.py`.
 
-| Role | Intended persona | Access level |
-|---|---|---|
-| `viewer` | Read-only dashboard consumer | Telemetry, resource registry, dashboards |
-| `operator` | Facilities technician | Telemetry + HVAC setpoint commands + Modbus commands |
-| `admin` | Facilities manager, platform operator | Telemetry + commands + audit logs |
+| Role       | Intended persona                      | Access level                                         |
+| ---------- | ------------------------------------- | ---------------------------------------------------- |
+| `viewer`   | Read-only dashboard consumer          | Telemetry, resource registry, dashboards             |
+| `operator` | Facilities technician                 | Telemetry + HVAC setpoint commands + Modbus commands |
+| `admin`    | Facilities manager, platform operator | Telemetry + commands + audit logs                    |
 
 ### Keycloak User Configuration
 
 ![Keycloak admin console showing alice, bob, and carol with their assigned realm roles](docs/screenshots/keycloak-users.png)
 
-*The Keycloak admin console (`http://localhost:18080/admin`) showing the three demo users in the `basis` realm with their assigned realm roles.*
+_The Keycloak admin console (`http://localhost:18080/admin`) showing the three demo users in the `basis` realm with their assigned realm roles._
 
 ### JWT Structure
 
@@ -246,20 +287,20 @@ sequenceDiagram
 
 MQTT topics follow the pattern `basis/{system}/{zone}/{message-type}`:
 
-| Topic | Publisher | Cadence | Key payload fields |
-|---|---|---|---|
-| `basis/hvac/main/telemetry` | Simulator | 3 s | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed` |
-| `basis/sensors/co2/telemetry` | Simulator | 6 s | `co2_level`, `unit`, `status` |
-| `basis/sensors/occupancy/telemetry` | Simulator | 12 s | `occupancy_status`, `occupant_count` |
+| Topic                               | Publisher | Cadence | Key payload fields                                                    |
+| ----------------------------------- | --------- | ------- | --------------------------------------------------------------------- |
+| `basis/hvac/main/telemetry`         | Simulator | 3 s     | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed` |
+| `basis/sensors/co2/telemetry`       | Simulator | 6 s     | `co2_level`, `unit`, `status`                                         |
+| `basis/sensors/occupancy/telemetry` | Simulator | 12 s    | `occupancy_status`, `occupant_count`                                  |
 
 ### Modbus Telemetry (Chiller, Pump)
 
 The Modbus adapter publishes synthetic telemetry to the broadcaster directly (no MQTT hop):
 
-| Synthetic topic | Cadence | Key payload fields |
-|---|---|---|
-| `basis/modbus/chiller-1/telemetry` | 10 s | `supply_temp_setpoint_c`, `supply_temp_actual_c`, `status` |
-| `basis/modbus/pump-1/telemetry` | 10 s | `speed_pct`, `flow_lpm`, `status` |
+| Synthetic topic                    | Cadence | Key payload fields                                         |
+| ---------------------------------- | ------- | ---------------------------------------------------------- |
+| `basis/modbus/chiller-1/telemetry` | 10 s    | `supply_temp_setpoint_c`, `supply_temp_actual_c`, `status` |
+| `basis/modbus/pump-1/telemetry`    | 10 s    | `speed_pct`, `flow_lpm`, `status`                          |
 
 ### WebSocket Authentication
 
@@ -269,10 +310,10 @@ WebSocket connections require a valid JWT passed as a query parameter:
 ws://localhost:8000/ws/telemetry?token=<access_token>
 ```
 
-| Close code | Meaning |
-|---|---|
-| `4000` | Authentication or authorization failure — do not reconnect |
-| `4001` | Token expired mid-session — refresh and reconnect |
+| Close code | Meaning                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `4000`     | Authentication or authorization failure — do not reconnect |
+| `4001`     | Token expired mid-session — refresh and reconnect          |
 
 The frontend handles 4001 automatically: it calls `keycloak.updateToken()` then reconnects immediately.
 
@@ -297,7 +338,7 @@ The API maintains an in-memory snapshot (topic → latest payload). A client con
 
 ![Live telemetry dashboard showing HVAC temperature, CO₂ air quality, and occupancy cards receiving data over WebSocket](docs/screenshots/telemetry.png)
 
-*Three telemetry cards receiving live data over an authenticated WebSocket connection.*
+_Three telemetry cards receiving live data over an authenticated WebSocket connection._
 
 ---
 
@@ -343,6 +384,7 @@ sequenceDiagram
 ### Modbus Command (Modbus TCP Adapter)
 
 **Endpoints:**
+
 - `POST /api/controls/modbus/chiller-1/setpoint` — chiller supply temperature (°C)
 - `POST /api/controls/modbus/pump-1/speed` — pump speed (%)
 
@@ -352,19 +394,19 @@ The Modbus command path uses identical security infrastructure. `require_action(
 
 ![Operator control panel showing a setpoint command successfully sent with the confirmation status message](docs/screenshots/operator-control.png)
 
-*Bob (operator) submitting a new HVAC setpoint. The API validated his JWT, evaluated `write:hvac:setpoint` via the PolicyEngine, confirmed his `operator` role, and published the command to the MQTT broker.*
+_Bob (operator) submitting a new HVAC setpoint. The API validated his JWT, evaluated `write:hvac:setpoint` via the PolicyEngine, confirmed his `operator` role, and published the command to the MQTT broker._
 
 ### Validation Layers
 
-| Layer | Location | What it catches | Error returned |
-|---|---|---|---|
-| Range check | Frontend | Out-of-range before HTTP request | Input prevented |
-| JWT validation | FastAPI | Missing/invalid/expired token | 401 Unauthorized |
-| PolicyEngine | FastAPI | Valid token, action not permitted for role | 403 Forbidden |
-| Pydantic model | FastAPI | Wrong type, out of range, missing field | 422 Unprocessable Entity |
-| Resource registry | FastAPI | Unknown zone or device identifier | 404 Not Found |
-| Adapter unavailable | FastAPI | Broker or register bank unreachable | 503 Service Unavailable |
-| Payload re-validation | Simulator | Malformed replayed MQTT messages | Logged and dropped |
+| Layer                 | Location  | What it catches                            | Error returned           |
+| --------------------- | --------- | ------------------------------------------ | ------------------------ |
+| Range check           | Frontend  | Out-of-range before HTTP request           | Input prevented          |
+| JWT validation        | FastAPI   | Missing/invalid/expired token              | 401 Unauthorized         |
+| PolicyEngine          | FastAPI   | Valid token, action not permitted for role | 403 Forbidden            |
+| Pydantic model        | FastAPI   | Wrong type, out of range, missing field    | 422 Unprocessable Entity |
+| Resource registry     | FastAPI   | Unknown zone or device identifier          | 404 Not Found            |
+| Adapter unavailable   | FastAPI   | Broker or register bank unreachable        | 503 Service Unavailable  |
+| Payload re-validation | Simulator | Malformed replayed MQTT messages           | Logged and dropped       |
 
 ---
 
@@ -372,15 +414,15 @@ The Modbus command path uses identical security infrastructure. `require_action(
 
 Three demo users are pre-seeded in Keycloak. All share the password `demo123`.
 
-| User | Role | Telemetry | HVAC commands | Modbus commands | Audit log |
-|---|---|:---:|:---:|:---:|:---:|
-| `alice` | viewer | ✅ | ❌ 403 | ❌ 403 | ❌ 403 |
-| `bob` | operator | ✅ | ✅ | ✅ | ❌ 403 |
-| `carol` | admin | ✅ | ✅ | ✅ | ✅ |
+| User    | Role     | Telemetry | HVAC commands | Modbus commands | Audit log |
+| ------- | -------- | :-------: | :-----------: | :-------------: | :-------: |
+| `alice` | viewer   |    ✅     |    ❌ 403     |     ❌ 403      |  ❌ 403   |
+| `bob`   | operator |    ✅     |      ✅       |       ✅        |  ❌ 403   |
+| `carol` | admin    |    ✅     |      ✅       |       ✅        |    ✅     |
 
 ![Viewer-role locked control panel showing the access restriction message](docs/screenshots/viewer-locked.png)
 
-*Alice (viewer) sees the locked panel. The frontend renders the restriction UI based on `hasRole('operator') || hasRole('admin')`. A direct API call to any command endpoint with her token returns 403 — the policy boundary is enforced server-side regardless of what the UI renders.*
+_Alice (viewer) sees the locked panel. The frontend renders the restriction UI based on `hasRole('operator') || hasRole('admin')`. A direct API call to any command endpoint with her token returns 403 — the policy boundary is enforced server-side regardless of what the UI renders._
 
 The audit log (`GET /api/audit`) is admin-only and backed by a SQLite store with filtering by subject, action, outcome, and resource. SUBSCRIBE and DISCONNECT events for WebSocket sessions are included — the audit trail covers the full session lifecycle.
 
@@ -437,15 +479,15 @@ Keycloak starts in parallel and takes approximately 60–90 seconds to complete 
 
 ### Service URLs
 
-| Service | URL | Notes |
-|---|---|---|
-| Operator console | http://localhost:5173 | Log in to begin |
-| API | http://localhost:8000 | |
-| API docs (Swagger) | http://localhost:8000/docs | Paste a Bearer token to test protected endpoints |
-| Keycloak realm | http://localhost:18080/realms/basis | Realm metadata |
-| Keycloak admin | http://localhost:18080/admin | `admin` / `admin` |
-| MQTT (TCP) | localhost:1883 | Credentials required — see `.env.example` |
-| MQTT (WebSocket) | localhost:9001 | Available for browser MQTT clients |
+| Service            | URL                                 | Notes                                            |
+| ------------------ | ----------------------------------- | ------------------------------------------------ |
+| Operator console   | http://localhost:5173               | Log in to begin                                  |
+| API                | http://localhost:8000               |                                                  |
+| API docs (Swagger) | http://localhost:8000/docs          | Paste a Bearer token to test protected endpoints |
+| Keycloak realm     | http://localhost:18080/realms/basis | Realm metadata                                   |
+| Keycloak admin     | http://localhost:18080/admin        | `admin` / `admin`                                |
+| MQTT (TCP)         | localhost:1883                      | Credentials required — see `.env.example`        |
+| MQTT (WebSocket)   | localhost:9001                      | Available for browser MQTT clients               |
 
 ### Useful Commands
 
@@ -477,6 +519,136 @@ docker compose down -v && docker compose up --build
 ### Hot Reload
 
 Source code is volume-mounted into each container. Changes to Python files trigger `uvicorn --reload` automatically. Changes to React files trigger Vite HMR automatically. Simulator changes require `docker compose restart simulator`.
+
+---
+
+## GitHub Codespaces Setup
+
+Codespaces provides a cloud-hosted development environment where BASIS runs exactly as it does locally — same Docker Compose stack, same services, same architecture. The environment is configured automatically; no manual steps are required after the Codespace starts.
+
+### What the environment configures automatically
+
+When the Codespace is first created, `.devcontainer/scripts/post-create.sh` runs and:
+
+1. Copies `.env.example` to `.env` and rewrites `localhost` URLs to Codespaces forwarded-port URLs.
+2. Sets `KC_PROXY=edge` so Keycloak correctly constructs its issuer URL behind the Codespaces HTTPS proxy. This ensures JWT `iss` claims match what the API expects.
+3. Runs `docker compose up --build -d` to build all images and start all services.
+4. Waits for Keycloak to complete realm import (60–90 seconds).
+5. Patches the `basis-frontend` OIDC client's redirect URIs via the Keycloak admin API, adding the Codespaces frontend URL alongside the existing `localhost:5173` entries.
+6. Prints a welcome message with all service URLs and demo credentials.
+
+When a Codespace is **resumed** after being stopped, `.devcontainer/scripts/post-start.sh` repeats steps 3–5 (images are already built, so step 3 is fast — ~60–90s total, dominated by Keycloak).
+
+### Why Keycloak requires patching at runtime
+
+The Keycloak realm is imported from `infra/keycloak/realm-export.json`, which registers `http://localhost:5173` as the valid redirect URI for the `basis-frontend` OIDC client. In Codespaces, the browser accesses the frontend via a `https://{name}-5173.app.github.dev` URL, which would fail Keycloak's redirect URI validation.
+
+The post-create script adds the Codespaces URL to the client's redirect URIs via the admin API. This is a runtime configuration change — the `realm-export.json` is not modified, so local development is unaffected.
+
+### Service URLs in Codespaces
+
+Forwarded-port URLs follow the pattern `https://{codespace-name}-{port}.app.github.dev`:
+
+| Service          | Port  | URL pattern                                 |
+| ---------------- | ----- | ------------------------------------------- |
+| Operator Console | 5173  | `https://{name}-5173.app.github.dev`        |
+| API (Swagger UI) | 8000  | `https://{name}-8000.app.github.dev/docs`   |
+| Keycloak admin   | 18080 | `https://{name}-18080.app.github.dev/admin` |
+| MQTT (TCP)       | 1883  | Not usable from browser; internal only      |
+| MQTT (WebSocket) | 9001  | `wss://{name}-9001.app.github.dev`          |
+
+The VS Code Ports panel shows live URLs for your specific Codespace.
+
+### Useful commands in Codespaces
+
+These are the same commands as local development — the environment is identical:
+
+```bash
+# Check which services are running
+docker compose ps
+
+# Follow logs for a specific service
+docker compose logs -f api
+docker compose logs -f keycloak
+
+# Restart a service after code changes (hot reload handles Python/React automatically)
+docker compose restart simulator
+
+# Full reset — wipes all state and rebuilds from scratch
+docker compose down -v && docker compose up --build -d
+
+# Query the audit log (requires a Carol token — copy from browser dev tools)
+curl -s -H "Authorization: Bearer <carol-token>" \
+  "http://localhost:8000/api/audit?limit=20" | python3 -m json.tool
+
+# Watch the MQTT wire
+mosquitto_sub -h localhost -p 1883 -u basis-api -P basis-api-secret -t 'basis/#' -v
+```
+
+### Troubleshooting
+
+**The Operator Console shows "Authentication failed" or a blank page**
+
+Keycloak may still be starting. The realm import takes 60–90 seconds. Check:
+
+```bash
+docker compose logs keycloak | tail -30
+curl http://localhost:18080/realms/basis
+```
+
+If Keycloak is ready but auth still fails, the redirect URI patch may not have run. Re-run it manually:
+
+```bash
+bash .devcontainer/scripts/post-start.sh
+```
+
+**Login redirects to the wrong URL or shows a "redirect_uri mismatch" error**
+
+This means the Codespaces frontend URL wasn't added to Keycloak's redirect URIs. Re-run the post-start script, which re-patches the client:
+
+```bash
+bash .devcontainer/scripts/post-start.sh
+```
+
+**Telemetry cards show "reconnecting" but don't receive data**
+
+The WebSocket connects to the API via the forwarded port. Verify the API is healthy:
+
+```bash
+curl http://localhost:8000/health
+docker compose logs api | tail -20
+```
+
+**Services won't start or docker compose fails**
+
+Check available disk space and Docker daemon health:
+
+```bash
+docker info
+df -h
+docker compose logs
+```
+
+If the Codespace VM is out of resources, try a full reset:
+
+```bash
+docker compose down -v
+docker system prune -f
+docker compose up --build -d
+```
+
+**Codespace was stopped and restarted — services aren't running**
+
+The post-start script should handle this automatically. If it didn't, bring services up manually:
+
+```bash
+docker compose up -d
+bash .devcontainer/scripts/post-start.sh
+```
+
+### Local development with VS Code Dev Containers
+
+The same `.devcontainer/devcontainer.json` works with VS Code Dev Containers locally if you have Docker Desktop installed. Open the project folder in VS Code and click "Reopen in Container" when prompted. The setup is identical to Codespaces, except URLs remain `localhost`-based.
 
 ---
 
@@ -523,9 +695,9 @@ Every command is validated at three independent layers: the frontend (prevents o
 
 The MQTT broker (Mosquitto 2.0) runs with anonymous access disabled. Each service authenticates with a distinct username:
 
-| Service | MQTT identity | ACL intent |
-|---|---|---|
-| API | `basis-api` | Subscribe `basis/#`, publish `basis/hvac/+/command` |
+| Service   | MQTT identity     | ACL intent                                                 |
+| --------- | ----------------- | ---------------------------------------------------------- |
+| API       | `basis-api`       | Subscribe `basis/#`, publish `basis/hvac/+/command`        |
 | Simulator | `basis-simulator` | Publish telemetry topics, subscribe `basis/hvac/+/command` |
 
 Credentials are stored in `infra/mosquitto/passwd` as PBKDF2-SHA512 hashes. The cleartext values are development-only defaults documented in `.env.example`.
@@ -542,19 +714,19 @@ For a comprehensive walkthrough of the platform architecture — including domai
 
 ## Architecture Decision Records
 
-The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records documenting the reasoning behind major architectural choices in BASIS. ADRs explain *why* decisions were made — including the alternatives considered and the trade-offs accepted.
+The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records documenting the reasoning behind major architectural choices in BASIS. ADRs explain _why_ decisions were made — including the alternatives considered and the trade-offs accepted.
 
-| ADR | Decision |
-|-----|----------|
-| [ADR-0001](docs/adr/ADR-0001-modular-monolith-architecture.md) | Modular monolith over microservices |
-| [ADR-0002](docs/adr/ADR-0002-sqlite-audit-persistence.md) | SQLite for local-first audit persistence |
-| [ADR-0003](docs/adr/ADR-0003-mqtt-as-transport-layer.md) | MQTT treated as transport only, not domain model |
-| [ADR-0004](docs/adr/ADR-0004-action-based-authorization.md) | Action-based authorization over role checks at endpoints |
-| [ADR-0005](docs/adr/ADR-0005-subject-resource-event-normalization.md) | Normalized Subject, Resource, and Event domain models |
-| [ADR-0006](docs/adr/ADR-0006-local-first-architecture.md) | Local-first, air-gap compatible deployment philosophy |
-| [ADR-0007](docs/adr/ADR-0007-wire-compatibility-during-refactors.md) | Preserve wire compatibility during internal refactors |
-| [ADR-0008](docs/adr/ADR-0008-no-kubernetes-dependency.md) | No Kubernetes dependency |
-| [ADR-0009](docs/adr/ADR-0009-protocol-agnostic-adapter-design.md) | Protocol-agnostic adapter design via `AdapterBase` |
+| ADR                                                                   | Decision                                                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------- |
+| [ADR-0001](docs/adr/ADR-0001-modular-monolith-architecture.md)        | Modular monolith over microservices                      |
+| [ADR-0002](docs/adr/ADR-0002-sqlite-audit-persistence.md)             | SQLite for local-first audit persistence                 |
+| [ADR-0003](docs/adr/ADR-0003-mqtt-as-transport-layer.md)              | MQTT treated as transport only, not domain model         |
+| [ADR-0004](docs/adr/ADR-0004-action-based-authorization.md)           | Action-based authorization over role checks at endpoints |
+| [ADR-0005](docs/adr/ADR-0005-subject-resource-event-normalization.md) | Normalized Subject, Resource, and Event domain models    |
+| [ADR-0006](docs/adr/ADR-0006-local-first-architecture.md)             | Local-first, air-gap compatible deployment philosophy    |
+| [ADR-0007](docs/adr/ADR-0007-wire-compatibility-during-refactors.md)  | Preserve wire compatibility during internal refactors    |
+| [ADR-0008](docs/adr/ADR-0008-no-kubernetes-dependency.md)             | No Kubernetes dependency                                 |
+| [ADR-0009](docs/adr/ADR-0009-protocol-agnostic-adapter-design.md)     | Protocol-agnostic adapter design via `AdapterBase`       |
 
 ---
 
@@ -594,24 +766,24 @@ These are known gaps, not bugs. They represent the honest state of a platform pr
 
 All implemented stages are marked ✅. Potential directions reflect architectural possibilities, not committed scope.
 
-| Stage | Goal | Status |
-|---|---|---|
-| **Stage 1** | Local dev environment — Docker Compose, all services wired | ✅ Complete |
-| **Stage 2** | OIDC authentication — Keycloak realm, PKCE browser flow, JWT validation | ✅ Complete |
-| **Stage 3** | Live telemetry — MQTT subscriber, WebSocket broadcaster, snapshot cache | ✅ Complete |
-| **Stage 4** | Role-gated commands — HVAC setpoint, role checks, multi-layer validation | ✅ Complete |
-| **Stage 5** | Audit logging — `AuditEvent` model, structured stdout, `/api/audit` endpoint | ✅ Complete |
-| **Stage 5b** | SQLite audit persistence — `SqliteAuditStore`, `DualAuditStore`, queryable API with filters | ✅ Complete |
-| **Stage 6** | MQTT security — per-service credentials, anonymous access disabled, `adapters/mqtt/` refactor | ✅ Complete |
-| **Stage 7** | Identity-aware policy architecture — `Subject` model, `PolicyEngine`, `RoleBasedPolicy`, `require_action()` replaces `require_role()` | ✅ Complete |
-| **Stage 7b** | Normalized event models — `TelemetryEvent` and `CommandEvent` as internal canonical representations | ✅ Complete |
-| **Stage 8** | Resource model — typed `Resource` objects, static registry, `GET /api/resources`, registry-driven zone validation | ✅ Complete |
-| **Stage 9** | Authenticated telemetry gateway — WebSocket JWT auth, `TelemetrySession`, SUBSCRIBE/DISCONNECT audit, token expiry (close 4001) | ✅ Complete |
-| **Stage 10** | Protocol-agnostic adapter PoC — `AdapterBase`, `MqttAdapter`, `ModbusTcpAdapter`, Modbus command endpoints, adapter registry in `main.py` | ✅ Complete |
-| **Stage 11** | Zone-scoped policy — Resource-aware `PolicyEngine` evaluation; per-zone role grants without modifying `RoleBasedPolicy` | Potential direction |
-| **Stage 12** | Real device integration — Replace `ModbusTcpAdapter` simulation with a real Modbus TCP socket; adapter contract unchanged | Potential direction |
-| **Stage 13** | MQTT per-topic ACLs — Broker-level ACL enforcement to complement API-layer authorization | Potential direction |
-| **Stage 14** | Production hardening — TLS on MQTT, HTTPS via reverse proxy, PostgreSQL-backed Keycloak, secrets management baseline | Potential direction |
+| Stage        | Goal                                                                                                                                      | Status              |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| **Stage 1**  | Local dev environment — Docker Compose, all services wired                                                                                | ✅ Complete         |
+| **Stage 2**  | OIDC authentication — Keycloak realm, PKCE browser flow, JWT validation                                                                   | ✅ Complete         |
+| **Stage 3**  | Live telemetry — MQTT subscriber, WebSocket broadcaster, snapshot cache                                                                   | ✅ Complete         |
+| **Stage 4**  | Role-gated commands — HVAC setpoint, role checks, multi-layer validation                                                                  | ✅ Complete         |
+| **Stage 5**  | Audit logging — `AuditEvent` model, structured stdout, `/api/audit` endpoint                                                              | ✅ Complete         |
+| **Stage 5b** | SQLite audit persistence — `SqliteAuditStore`, `DualAuditStore`, queryable API with filters                                               | ✅ Complete         |
+| **Stage 6**  | MQTT security — per-service credentials, anonymous access disabled, `adapters/mqtt/` refactor                                             | ✅ Complete         |
+| **Stage 7**  | Identity-aware policy architecture — `Subject` model, `PolicyEngine`, `RoleBasedPolicy`, `require_action()` replaces `require_role()`     | ✅ Complete         |
+| **Stage 7b** | Normalized event models — `TelemetryEvent` and `CommandEvent` as internal canonical representations                                       | ✅ Complete         |
+| **Stage 8**  | Resource model — typed `Resource` objects, static registry, `GET /api/resources`, registry-driven zone validation                         | ✅ Complete         |
+| **Stage 9**  | Authenticated telemetry gateway — WebSocket JWT auth, `TelemetrySession`, SUBSCRIBE/DISCONNECT audit, token expiry (close 4001)           | ✅ Complete         |
+| **Stage 10** | Protocol-agnostic adapter PoC — `AdapterBase`, `MqttAdapter`, `ModbusTcpAdapter`, Modbus command endpoints, adapter registry in `main.py` | ✅ Complete         |
+| **Stage 11** | Zone-scoped policy — Resource-aware `PolicyEngine` evaluation; per-zone role grants without modifying `RoleBasedPolicy`                   | Potential direction |
+| **Stage 12** | Real device integration — Replace `ModbusTcpAdapter` simulation with a real Modbus TCP socket; adapter contract unchanged                 | Potential direction |
+| **Stage 13** | MQTT per-topic ACLs — Broker-level ACL enforcement to complement API-layer authorization                                                  | Potential direction |
+| **Stage 14** | Production hardening — TLS on MQTT, HTTPS via reverse proxy, PostgreSQL-backed Keycloak, secrets management baseline                      | Potential direction |
 
 ---
 

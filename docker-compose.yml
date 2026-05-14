@@ -10,6 +10,10 @@ services:
       KC_DB: dev-file
       KC_HEALTH_ENABLED: "true"
       KC_LOG_LEVEL: INFO
+      # KC_PROXY: When running behind an HTTPS reverse proxy (e.g. GitHub Codespaces
+      # port forwarding), set KC_PROXY=edge so Keycloak trusts X-Forwarded-Proto/Host
+      # headers and constructs correct issuer URLs. Unset for plain local dev.
+      KC_PROXY: ${KC_PROXY:-}
     volumes:
       - ./infra/keycloak:/opt/keycloak/data/import:ro
     ports:
