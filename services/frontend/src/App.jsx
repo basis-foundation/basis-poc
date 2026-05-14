@@ -15,9 +15,16 @@ import ControlPanel from './components/ControlPanel'
 
 // ── WebSocket base URL ────────────────────────────────────────────────────────
 // The hook appends /ws/telemetry?token=<JWT> — we pass the base only.
-const WS_BASE_URL =
-  (import.meta.env.VITE_API_URL || 'http://localhost:8000')
-    .replace(/^http/, 'ws')
+//
+// We always use the page's own origin (port 5173) rather than VITE_API_URL
+// (port 8000). Vite's proxy rule for /ws forwards the connection to the API
+// container internally, keeping all traffic on a single origin.
+//
+// This is critical in GitHub Codespaces: each forwarded port has its own
+// tunnel authentication cookie. A direct WebSocket to wss://...-8000.app.github.dev
+// fails because the browser has no auth cookie for the port-8000 domain.
+// Routing through the frontend's origin (already authenticated) avoids this.
+const WS_BASE_URL = window.location.origin.replace(/^http/, 'ws')
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
