@@ -1,20 +1,25 @@
 # Basis Foundation
 
-A proof-of-concept demonstrating identity-aware access control applied to building automation and operational technology (OT) systems.
+**An identity and policy control plane for operational technology (OT) environments.**
 
-**Current status:** Stage 6 complete — local development environment, authentication, live telemetry, role-gated operational commands, audit logging, and MQTT service authentication are all functional. This is not a production system.
+BASIS validates what happens when you apply modern identity infrastructure — cryptographically signed tokens, action-based authorization policy, chain-of-responsibility evaluation, and durable audit trails — to building automation and industrial control systems that have historically operated without it.
+
+The platform runs entirely on Docker Compose. No cloud. No Kubernetes. No external dependencies.
 
 ---
 
 ## Table of Contents
 
+- [What BASIS Is and Is Not](#what-basis-is-and-is-not)
 - [Problem Statement](#problem-statement)
+- [The Control Plane Model](#the-control-plane-model)
 - [Architecture](#architecture)
 - [Identity and Authorization Model](#identity-and-authorization-model)
 - [Authentication Flow](#authentication-flow)
 - [Telemetry Flow](#telemetry-flow)
 - [Operational Command Flow](#operational-command-flow)
 - [Demo Role Matrix](#demo-role-matrix)
+- [Potential Future Applications](#potential-future-applications)
 - [Local Development Setup](#local-development-setup)
 - [Security Design Decisions](#security-design-decisions)
 - [Architecture Documentation](#architecture-documentation)
@@ -22,6 +27,24 @@ A proof-of-concept demonstrating identity-aware access control applied to buildi
 - [Current Limitations](#current-limitations)
 - [Roadmap](#roadmap)
 - [Project Structure](#project-structure)
+
+---
+
+## What BASIS Is and Is Not
+
+### BASIS is:
+
+- **An architecture validation platform** for identity-aware OT control. It exists to answer a specific question: what does a proper control plane look like for systems that currently have none?
+- **A working reference implementation** of a layered security pattern — JWT-based identity, named action authorization, chain-of-responsibility policy evaluation, protocol-agnostic adapter lifecycle, and durable audit trails.
+- **A local-first, air-gap-compatible prototype** that runs entirely on Docker Compose without cloud connectivity. The design philosophy treats network isolation as a feature, not a constraint.
+- **A platform for exploring OT identity architecture** before committing to infrastructure. The staging model lets each design decision be validated in isolation before the next layer is added.
+
+### BASIS is not:
+
+- **A production system.** MQTT runs without TLS, all traffic is plain HTTP and WS, Keycloak uses an H2 development database, and there is no secrets management. These are known, deliberate gaps in a platform prototype.
+- **A real Modbus, BACnet, or OPC-UA implementation.** The Modbus adapter manages an in-memory register bank. It demonstrates the adapter contract and authorization path — not a fieldbus driver.
+- **A replacement for industrial-grade SCADA, DCS, or BAS platforms.** BASIS is not competing with Niagara, Ignition, or Tridium. It is a pattern demonstration.
+- **A security product ready for any deployment.** Do not deploy BASIS or its configuration patterns to production systems without a full security review.
 
 ---
 
@@ -35,10 +58,35 @@ This creates compounding problems as these systems are networked:
 - There is no authoritative record of who issued which command and when.
 - Broker-level access (e.g., MQTT) is typically all-or-nothing.
 - Identity is asserted by clients rather than verified by an authoritative provider.
+- Multiple OT protocols (Modbus, BACnet, MQTT) each have separate — or absent — access control mechanisms with no unified policy.
 
-Basis Foundation explores what a properly identity-aware OT control plane looks like: one where every API call carries a cryptographically signed identity claim, every control command is authorized against a role policy before it reaches the physical system, and the audit trail is a first-class concern rather than an afterthought.
+BASIS explores what a properly identity-aware OT control plane looks like: one where every API call carries a cryptographically signed identity claim, every control command is authorized against a role policy before it reaches the physical system, and the audit trail is a first-class concern rather than an afterthought.
 
-This PoC uses simulated building systems. The patterns are intended to be applicable to real BACnet, Modbus, or MQTT-connected devices behind an API gateway.
+---
+
+## The Control Plane Model
+
+In networking, a control plane governs *how* traffic should flow — it makes decisions. The data plane actually moves packets.
+
+BASIS applies this separation to OT:
+
+- The **data plane** is the physical layer: MQTT brokers, Modbus buses, BACnet/IP networks, sensors, actuators. These move measurements and commands.
+- The **control plane** is BASIS: identity verification, authorization policy, command gating, and audit. It decides *who may do what to which device* before anything reaches the data plane.
+
+Without a control plane, OT systems authenticate (if at all) at the protocol level — a Modbus master can issue any write to any register it can reach. BASIS intercepts at the API boundary: no command reaches the protocol layer until the PolicyEngine evaluates it against the role table and emits an audit record.
+
+This model is **protocol-agnostic by design.** The same PolicyEngine, the same `require_action()` dependency, and the same audit logger govern HVAC setpoints over MQTT and chiller setpoints over simulated Modbus TCP. Adding a new protocol adapter requires no changes to the security path — only a new adapter implementing `AdapterBase` and a new action constant in `policy/actions.py`.
+
+### Core concepts
+
+| Concept | Role in BASIS |
+|---|---|
+| **Subject** | Who is acting. Parsed from the JWT at the auth boundary. Typed: HUMAN, DEVICE, SERVICE, GATEWAY, AGENT. |
+| **Action** | What is being attempted. Named constants like `write:hvac:setpoint`, `write:modbus:setpoint`, `read:audit:log`. Stable — they appear verbatim in audit records. |
+| **Resource** | What is being acted on. Typed objects in a registry: HVAC controllers, sensors, devices, zones. |
+| **PolicyEngine** | Chain-of-responsibility evaluator. Each policy in the chain may allow, deny, or pass. |
+| **RoleBasedPolicy** | The current policy. Maps actions to the roles that may perform them. One table, one place. |
+| **AuditEvent** | Immutable record of every authorization decision and command dispatch. Written to stdout and SQLite. |
 
 ---
 
@@ -48,11 +96,12 @@ This PoC uses simulated building systems. The patterns are intended to be applic
 
 | Service | Technology | Role |
 |---|---|---|
-| **Identity Provider** | Keycloak 23 | OIDC/OAuth2 authority. Issues signed JWTs. Owns the role model. |
-| **API Gateway** | FastAPI 0.4 | Validates JWTs, enforces role policy, bridges MQTT to WebSocket. |
-| **Message Broker** | Mosquitto 2.0 | MQTT broker. Internal bus for telemetry and commands. |
-| **OT Simulator** | Python | Simulates HVAC and environmental sensors. Publishes telemetry, subscribes to commands. |
-| **Operator Console** | React + Vite | Browser SPA. OIDC login, live telemetry dashboard, role-gated control panel. |
+| **Identity Provider** | Keycloak 23 | OIDC/OAuth2 authority. Issues RS256-signed JWTs. Owns the role model. |
+| **API Gateway** | FastAPI 0.10 | Validates JWTs, evaluates PolicyEngine, bridges adapters to WebSocket. |
+| **Message Broker** | Mosquitto 2.0 | MQTT broker. Internal bus for HVAC/sensor telemetry and commands. Credentials required. |
+| **OT Adapters** | Python | MqttAdapter (HVAC, CO₂, occupancy) and ModbusTcpAdapter (chiller, pump). Both implement `AdapterBase`. |
+| **OT Simulator** | Python | Simulates HVAC and environmental sensors. Publishes MQTT telemetry, subscribes to commands. |
+| **Operator Console** | React + Vite | Browser SPA. OIDC login via PKCE, live telemetry dashboard, role-gated control panel. |
 
 All services run locally via Docker Compose. No cloud dependency. No Kubernetes.
 
@@ -62,35 +111,38 @@ All services run locally via Docker Compose. No cloud dependency. No Kubernetes.
 graph TD
     Browser["Operator Browser\nReact + Vite :5173"]
     KC["Keycloak\nOIDC Provider :18080"]
-    API["FastAPI\nAPI Gateway :8000"]
+    API["FastAPI\nControl Plane :8000"]
     MQ["Mosquitto\nMQTT Broker :1883"]
     SIM["OT Simulator\nHVAC + Sensors"]
+    MODBUS["Modbus Adapter\nIn-memory register bank"]
 
     Browser -->|"1 · OIDC auth code + PKCE"| KC
     KC -->|"2 · JWT access token"| Browser
     Browser -->|"3 · Bearer JWT on every request"| API
-    Browser -->|"4 · WebSocket /ws/telemetry"| API
+    Browser -->|"4 · WebSocket /ws/telemetry?token="| API
     API -->|"JWKS fetch (cached 5 min)"| KC
     API -->|"subscribe basis/#"| MQ
     API -->|"publish basis/hvac/+/command"| MQ
     MQ -->|"telemetry delivery"| API
     SIM -->|"publish telemetry (3–12s)"| MQ
     MQ -->|"command delivery"| SIM
+    MODBUS -->|"broadcast basis/modbus/+/telemetry (10s)"| API
+    API -->|"write_chiller_setpoint / write_pump_speed"| MODBUS
 ```
 
 ### Running Application
 
 ![Admin dashboard showing live HVAC, CO₂, and occupancy telemetry cards alongside the HVAC setpoint control panel](docs/screenshots/admin-dashboard.png)
 
-*Carol (admin) logged in. All three telemetry cards are receiving live data over WebSocket. The HVAC control panel is unlocked because her JWT carries the `admin` realm role.*
+*Carol (admin) logged in. All three telemetry cards are receiving live data over an authenticated WebSocket. The HVAC control panel is unlocked because her JWT carries the `admin` realm role.*
 
 ### Data Flow Summary
 
-Telemetry moves upward: Simulator → Mosquitto → API (subscriber) → WebSocket → Browser.
+Telemetry moves upward: Simulator → Mosquitto → API (MQTT adapter) → WebSocket → Browser. The Modbus adapter emits telemetry directly to the broadcaster on its own 10-second tick.
 
-Commands move downward: Browser → API (role-checked) → Mosquitto → Simulator → physical state change → reflected in next telemetry tick.
+Commands move downward: Browser → API (PolicyEngine evaluated) → adapter → protocol → physical state change → reflected in next telemetry tick.
 
-The API is the sole trust boundary for commands. The MQTT broker requires per-service credentials — the API and simulator each authenticate with distinct usernames. Anonymous access is disabled. TLS on the MQTT port is a planned stage.
+The API is the sole trust boundary for commands. No client publishes directly to the MQTT broker or writes to any register. Every command crosses the control plane.
 
 ---
 
@@ -107,19 +159,19 @@ Keycloak hosts a realm named `basis`. Two clients are registered:
 
 ### Roles
 
-Three realm roles are defined. They are additive — each level grants access to everything below it in the hierarchy as implemented in the API's `require_role()` dependency.
+Three realm roles are defined. They are additive — each level grants access to everything at lower levels as encoded in the `_ACTION_ROLES` table in `policy/rbac.py`.
 
 | Role | Intended persona | Access level |
 |---|---|---|
-| `viewer` | Read-only dashboard consumer | Telemetry, dashboards |
-| `operator` | Facilities technician | Telemetry + HVAC setpoint commands |
-| `admin` | Facilities manager, platform operator | Telemetry + commands + audit logs (Stage 5) |
+| `viewer` | Read-only dashboard consumer | Telemetry, resource registry, dashboards |
+| `operator` | Facilities technician | Telemetry + HVAC setpoint commands + Modbus commands |
+| `admin` | Facilities manager, platform operator | Telemetry + commands + audit logs |
 
 ### Keycloak User Configuration
 
 ![Keycloak admin console showing alice, bob, and carol with their assigned realm roles](docs/screenshots/keycloak-users.png)
 
-*The Keycloak admin console (`http://localhost:18080/admin`) showing the three demo users in the `basis` realm with their assigned realm roles. Accessible with credentials `admin` / `admin`.*
+*The Keycloak admin console (`http://localhost:18080/admin`) showing the three demo users in the `basis` realm with their assigned realm roles.*
 
 ### JWT Structure
 
@@ -140,17 +192,24 @@ Keycloak issues RS256-signed JWTs. Realm roles are carried in the `realm_access`
 
 The API reads `realm_access.roles` after validating the token signature and expiry. Role claims are never accepted from the request body or query parameters.
 
-### Token Validation
+### Action-Based Authorization
 
-The API validates every protected request using Keycloak's JWKS endpoint:
+Endpoints do not check roles directly. They declare what action they perform:
 
-1. Read `kid` (key ID) from the JWT header — identifies the RSA signing key.
-2. Fetch `http://keycloak:8080/realms/basis/protocol/openid-connect/certs` (cached for 5 minutes, force-refreshed on unknown `kid` to handle key rotation).
-3. Verify the RS256 signature using the matching JWK.
-4. Verify `exp` (expiry) and `iss` (issuer matches `http://localhost:18080/realms/basis`).
-5. Extract roles and apply the endpoint's `require_role()` constraint.
+```python
+subject: Subject = Depends(require_action(actions.WRITE_HVAC_SETPOINT))
+```
 
-The issuer URL intentionally uses the browser-facing external address (`localhost:18080`), not the internal Docker hostname, because Keycloak derives the `iss` claim from the incoming request's `Host` header at token issuance time.
+The `policy/rbac.py` table maps actions to the roles that may perform them:
+
+```python
+actions.WRITE_HVAC_SETPOINT:    {"operator", "admin"},
+actions.WRITE_MODBUS_SETPOINT:  {"operator", "admin"},
+actions.SUBSCRIBE_TELEMETRY:    {"viewer", "operator", "admin"},
+actions.READ_AUDIT_LOG:         {"admin"},
+```
+
+To grant a new role access to an action: one change in `rbac.py`. The router is untouched. Action names appear verbatim in audit records and are treated as stable identifiers — renaming them breaks audit trail continuity.
 
 ---
 
@@ -183,58 +242,74 @@ sequenceDiagram
 
 ## Telemetry Flow
 
+### MQTT Telemetry (HVAC, CO₂, Occupancy)
+
 MQTT topics follow the pattern `basis/{system}/{zone}/{message-type}`:
 
-| Topic | Publisher | Cadence | Payload fields |
+| Topic | Publisher | Cadence | Key payload fields |
 |---|---|---|---|
-| `basis/hvac/main/telemetry` | Simulator | 3 s | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed`, `zone`, `unit`, `timestamp` |
-| `basis/sensors/co2/telemetry` | Simulator | 6 s | `co2_level`, `unit`, `status`, `timestamp` |
-| `basis/sensors/occupancy/telemetry` | Simulator | 12 s | `occupancy_status`, `occupant_count`, `timestamp` |
+| `basis/hvac/main/telemetry` | Simulator | 3 s | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed` |
+| `basis/sensors/co2/telemetry` | Simulator | 6 s | `co2_level`, `unit`, `status` |
+| `basis/sensors/occupancy/telemetry` | Simulator | 12 s | `occupancy_status`, `occupant_count` |
+
+### Modbus Telemetry (Chiller, Pump)
+
+The Modbus adapter publishes synthetic telemetry to the broadcaster directly (no MQTT hop):
+
+| Synthetic topic | Cadence | Key payload fields |
+|---|---|---|
+| `basis/modbus/chiller-1/telemetry` | 10 s | `supply_temp_setpoint_c`, `supply_temp_actual_c`, `status` |
+| `basis/modbus/pump-1/telemetry` | 10 s | `speed_pct`, `flow_lpm`, `status` |
+
+### WebSocket Authentication
+
+WebSocket connections require a valid JWT passed as a query parameter:
+
+```
+ws://localhost:8000/ws/telemetry?token=<access_token>
+```
+
+| Close code | Meaning |
+|---|---|
+| `4000` | Authentication or authorization failure — do not reconnect |
+| `4001` | Token expired mid-session — refresh and reconnect |
+
+The frontend handles 4001 automatically: it calls `keycloak.updateToken()` then reconnects immediately.
 
 ```mermaid
 sequenceDiagram
     participant SIM as OT Simulator
     participant MQ as Mosquitto
-    participant API as FastAPI (aiomqtt subscriber)
+    participant API as FastAPI
     participant WS as Browser WebSocket
 
-    Note over SIM: HVACSimulator: random walk toward setpoint<br/>CO2Simulator: influenced by occupancy state<br/>OccupancySimulator: probabilistic state machine
-
-    loop Every tick (3 / 6 / 12 s per topic)
-        SIM->>MQ: publish basis/hvac/main/telemetry {JSON}
-        SIM->>MQ: publish basis/sensors/co2/telemetry {JSON}
-        SIM->>MQ: publish basis/sensors/occupancy/telemetry {JSON}
-        MQ->>API: async message delivery
+    loop Every tick
+        SIM->>MQ: publish basis/hvac/main/telemetry
+        MQ->>API: async delivery
         API->>API: parse payload, update snapshot cache
         API->>WS: broadcast {type:"update", topic, data}
     end
 
-    Note over API,WS: On WebSocket connect:<br/>snapshot of all cached topics sent immediately<br/>No empty cards on page reload
+    Note over API,WS: On authenticated WebSocket connect:<br/>snapshot of all cached topics sent immediately<br/>SUBSCRIBE event written to audit log
 ```
 
-The API maintains an in-memory snapshot (topic → latest payload). A client connecting mid-session receives a full snapshot immediately, then incremental updates.
+The API maintains an in-memory snapshot (topic → latest payload). A client connecting mid-session receives a full snapshot immediately, then incremental updates. Each WebSocket session is identity-bound — the subject name, roles, and token expiry are recorded in a `TelemetrySession` at connect time. Session duration is included in the DISCONNECT audit event.
 
 ![Live telemetry dashboard showing HVAC temperature, CO₂ air quality, and occupancy cards receiving data over WebSocket](docs/screenshots/telemetry.png)
 
-*The three telemetry cards receiving live data. HVAC shows current temperature, setpoint, mode (heating/cooling/idle), and fan speed. CO₂ shows parts-per-million with a color-coded status bar. Occupancy shows the current headcount. All three update in place as WebSocket messages arrive — no page reload required.*
+*Three telemetry cards receiving live data over an authenticated WebSocket connection.*
 
 ---
 
 ## Operational Command Flow
 
-Commands travel the reverse path. The API is the sole entry point — no client publishes directly to the MQTT broker.
+Commands travel the reverse path. The API is the sole entry point — no client writes to the MQTT broker or Modbus registers directly.
 
-**Command topic:** `basis/hvac/{zone}/command`
+### HVAC Command (MQTT)
 
-**Command payload:**
-```json
-{
-  "target_temperature": 23.0,
-  "requested_by": "bob",
-  "zone": "main",
-  "timestamp": "2025-01-01T12:00:00+00:00"
-}
-```
+**Endpoint:** `POST /api/controls/hvac/{zone}/setpoint`
+
+**Authorization:** `write:hvac:setpoint` — operator, admin
 
 ```mermaid
 sequenceDiagram
@@ -245,45 +320,51 @@ sequenceDiagram
     participant SIM as OT Simulator
 
     U->>F: set slider to 23°C, click Apply
-    F->>F: client-side range check (10–35°C)
     F->>API: POST /api/controls/hvac/main/setpoint<br/>Bearer: <operator JWT><br/>Body: {target_temperature: 23.0}
 
-    API->>API: validate JWT signature + expiry
-    API->>API: check realm_access.roles contains "operator" or "admin"
-    API->>API: Pydantic validation — ge=10.0, le=35.0
-    API->>API: zone allow-list check (only "main" active)
+    API->>API: validate JWT — extract Subject
+    API->>API: PolicyEngine.evaluate(subject, write:hvac:setpoint)
+    API->>API: RoleBasedPolicy — operator ✓ → allowed
+    API->>API: emit AuditEvent outcome=allowed
+    API->>API: Pydantic validation, zone registry check
+    API->>MQ: publish basis/hvac/main/command
+    API->>API: emit AuditEvent action=command_dispatch
 
-    API->>MQ: publish basis/hvac/main/command<br/>{target_temperature: 23.0, requested_by: "bob", ...}
-    API-->>F: 200 {status: "command_sent", target_temperature: 23.0, ...}
-    F-->>U: "✓ Setpoint command sent"
-
-    MQ->>SIM: deliver command (QoS 1)
-    SIM->>SIM: parse JSON, validate range (10–35°C)
-    SIM->>SIM: hvac.target_temp = 23.0
-    Note over SIM: logged: "Setpoint updated: 21.0 → 23.0°C (bob)"
+    MQ->>SIM: deliver command
+    SIM->>SIM: update setpoint
 
     loop Next telemetry ticks
-        SIM->>MQ: publish telemetry with target_temperature: 23.0<br/>current_temperature drifting toward target
+        SIM->>MQ: publish telemetry — temperature drifting toward target
         MQ->>API: deliver
-        API->>F: WebSocket update — HVAC card updates live
+        API->>F: WebSocket update
     end
 ```
 
+### Modbus Command (Modbus TCP Adapter)
+
+**Endpoints:**
+- `POST /api/controls/modbus/chiller-1/setpoint` — chiller supply temperature (°C)
+- `POST /api/controls/modbus/pump-1/speed` — pump speed (%)
+
+**Authorization:** `write:modbus:setpoint` — operator, admin
+
+The Modbus command path uses identical security infrastructure. `require_action(WRITE_MODBUS_SETPOINT)` invokes the same PolicyEngine, the same RoleBasedPolicy evaluation, and the same audit logger as the HVAC path. Two audit events are emitted per successful command: one for authorization, one for command delivery. This is the architectural proof of Stage 10 — a new OT protocol required no changes to auth, policy, or audit infrastructure.
+
 ![Operator control panel showing a setpoint command successfully sent with the confirmation status message](docs/screenshots/operator-control.png)
 
-*Bob (operator) submitting a new HVAC setpoint. The slider is set, Apply Setpoint was clicked, and the "✓ Setpoint command sent" confirmation is visible. The API validated his JWT, confirmed his `operator` role, and published the command to `basis/hvac/main/command`. The temperature card will begin drifting toward the new target within the next telemetry tick.*
+*Bob (operator) submitting a new HVAC setpoint. The API validated his JWT, evaluated `write:hvac:setpoint` via the PolicyEngine, confirmed his `operator` role, and published the command to the MQTT broker.*
 
-### Validation layers
+### Validation Layers
 
 | Layer | Location | What it catches | Error returned |
 |---|---|---|---|
 | Range check | Frontend | Out-of-range before HTTP request | Input prevented |
 | JWT validation | FastAPI | Missing/invalid/expired token | 401 Unauthorized |
-| Role check | FastAPI | Valid token, wrong role | 403 Forbidden |
+| PolicyEngine | FastAPI | Valid token, action not permitted for role | 403 Forbidden |
 | Pydantic model | FastAPI | Wrong type, out of range, missing field | 422 Unprocessable Entity |
-| Zone allow-list | FastAPI | Unknown zone identifier | 404 Not Found |
-| Broker unavailable | FastAPI | Mosquitto unreachable | 503 Service Unavailable |
-| Payload re-validation | Simulator | Malformed replayed messages | Logged and dropped |
+| Resource registry | FastAPI | Unknown zone or device identifier | 404 Not Found |
+| Adapter unavailable | FastAPI | Broker or register bank unreachable | 503 Service Unavailable |
+| Payload re-validation | Simulator | Malformed replayed MQTT messages | Logged and dropped |
 
 ---
 
@@ -291,17 +372,33 @@ sequenceDiagram
 
 Three demo users are pre-seeded in Keycloak. All share the password `demo123`.
 
-| User | Role | View telemetry | Send HVAC commands | View audit log |
-|---|---|:---:|:---:|:---:|
-| `alice` | viewer | ✅ | ❌ 403 | ❌ 403 |
-| `bob` | operator | ✅ | ✅ | ❌ 403 |
-| `carol` | admin | ✅ | ✅ | ✅ (Stage 5) |
+| User | Role | Telemetry | HVAC commands | Modbus commands | Audit log |
+|---|---|:---:|:---:|:---:|:---:|
+| `alice` | viewer | ✅ | ❌ 403 | ❌ 403 | ❌ 403 |
+| `bob` | operator | ✅ | ✅ | ✅ | ❌ 403 |
+| `carol` | admin | ✅ | ✅ | ✅ | ✅ |
 
 ![Viewer-role locked control panel showing the access restriction message](docs/screenshots/viewer-locked.png)
 
-*Alice (viewer) sees the locked panel. The frontend checks `hasRole('operator') || hasRole('admin')` before rendering the control UI — her `viewer` JWT passes this check as false, so the panel is replaced entirely with an explanation. A direct API call to `/api/controls/hvac/main/setpoint` with her token would return 403.*
+*Alice (viewer) sees the locked panel. The frontend renders the restriction UI based on `hasRole('operator') || hasRole('admin')`. A direct API call to any command endpoint with her token returns 403 — the policy boundary is enforced server-side regardless of what the UI renders.*
 
-The audit log endpoint (`GET /api/audit`) is role-gated to admin and returns a `501` response directing to `docker compose logs api | grep AUDIT`. Audit events are currently written to stdout in a structured single-line format. A queryable persistent store (SQLite) is a planned stage.
+The audit log (`GET /api/audit`) is admin-only and backed by a SQLite store with filtering by subject, action, outcome, and resource. SUBSCRIBE and DISCONNECT events for WebSocket sessions are included — the audit trail covers the full session lifecycle.
+
+---
+
+## Potential Future Applications
+
+BASIS validates a pattern that could be applied to real OT environments in several ways. These are architectural directions, not product commitments.
+
+**API gateway in front of existing BAS infrastructure.** A building with a mix of Modbus, BACnet/IP, and MQTT devices could place a BASIS-style control plane at the edge — normalizing authentication and authorization across protocols without replacing the underlying systems. Each protocol gets an adapter; the security model is shared.
+
+**Unified identity plane for mixed-protocol OT environments.** As IT/OT convergence increases, the absence of a common identity model is a significant operational gap. A control plane that treats all protocol adapters identically — same subject model, same policy table, same audit format — makes cross-protocol authorization auditable in a single log.
+
+**Audit-first compliance infrastructure.** Frameworks like NERC CIP, NIST SP 800-82, and IEC 62443 require demonstrable access control and audit trails for operational systems. The ACTION → ROLES → AuditEvent pattern produces the kind of structured, queryable records that compliance audits need. Every authorization decision and command dispatch is persisted with subject identity, action name, resource, outcome, and timestamp.
+
+**Zero-trust architecture prototype for OT.** Zero trust assumes no implicit network trust — every request is authenticated and authorized regardless of origin. OT networks have historically been the opposite: flat, trusted, perimeter-defended. BASIS demonstrates what zero-trust-style controls look like at the OT application layer, without requiring changes to physical network topology.
+
+**Multi-tenant facilities management.** The zone model in the resource registry points toward a future where policy grants are scoped to zones: an operator for Building A cannot issue commands to Building B's HVAC. The subject, action, and resource models are designed to support zone-scoped policy evaluation as a natural extension.
 
 ---
 
@@ -347,7 +444,7 @@ Keycloak starts in parallel and takes approximately 60–90 seconds to complete 
 | API docs (Swagger) | http://localhost:8000/docs | Paste a Bearer token to test protected endpoints |
 | Keycloak realm | http://localhost:18080/realms/basis | Realm metadata |
 | Keycloak admin | http://localhost:18080/admin | `admin` / `admin` |
-| MQTT (TCP) | localhost:1883 | Credentials required — see Useful Commands below |
+| MQTT (TCP) | localhost:1883 | Credentials required — see `.env.example` |
 | MQTT (WebSocket) | localhost:9001 | Available for browser MQTT clients |
 
 ### Useful Commands
@@ -362,16 +459,18 @@ docker compose restart simulator
 # Tail logs for one service
 docker compose logs -f api
 
-# Watch the full MQTT wire (credentials required — see .env.example for values)
+# Watch the full MQTT wire (credentials required)
 mosquitto_sub -h localhost -p 1883 -u basis-api -P basis-api-secret -t 'basis/#' -v
 
-# Tail structured audit events from the API log
-docker compose logs -f api | grep AUDIT
+# Query the audit log (admin token required)
+curl -s -H "Authorization: Bearer <carol-token>" \
+  "http://localhost:8000/api/audit?limit=20" | python3 -m json.tool
 
-# Inspect the WebSocket stream directly
-wscat -c ws://localhost:8000/ws/telemetry
+# Inspect audit events for a specific action
+curl -s -H "Authorization: Bearer <carol-token>" \
+  "http://localhost:8000/api/audit?action=write%3Amodbus%3Asetpoint"
 
-# Full reset — wipes all volumes (Keycloak DB, MQTT data)
+# Full reset — wipes all volumes (Keycloak DB, audit DB, MQTT data)
 docker compose down -v && docker compose up --build
 ```
 
@@ -389,10 +488,7 @@ The frontend client (`basis-frontend`) is a public client — there is no client
 
 ### JWKS-based validation, not shared secrets
 
-The API validates tokens using Keycloak's published RSA public keys (JWKS endpoint) rather than a shared secret. This means:
-- The API never needs a copy of any private key or client secret.
-- Key rotation is handled transparently — the API re-fetches JWKS on an unknown `kid`.
-- The API can be deployed in environments with no direct configuration channel to Keycloak beyond the network endpoint.
+The API validates tokens using Keycloak's published RSA public keys (JWKS endpoint) rather than a shared secret. This means the API never needs a copy of any private key or client secret. Key rotation is handled transparently — the API re-fetches JWKS on an unknown `kid`. The API can be deployed in environments with no direct configuration channel to Keycloak beyond the network endpoint.
 
 ### Role claims from the authoritative source
 
@@ -401,14 +497,27 @@ Roles are read from the JWT's `realm_access.roles` claim, which is set by Keyclo
 ### Separation of internal and external Keycloak URLs
 
 The API uses two different Keycloak addresses:
+
 - `http://keycloak:8080` — internal Docker hostname, used only for JWKS fetching.
 - `http://localhost:18080` — external browser-facing URL, used for `iss` claim validation.
 
 This is necessary because Keycloak's `iss` claim reflects the hostname the browser used at login time. Accepting the internal hostname for `iss` would allow forged tokens from any service inside the Docker network.
 
+### Action-based authorization, not role checks at endpoints
+
+Endpoints declare what action they perform. The policy table decides who may perform it. This inversion means adding a new role requires one change in `policy/rbac.py` — not a search across every router for `require_role()` calls. Action names are stable identifiers that appear verbatim in audit records; renaming them breaks audit trail continuity.
+
+### Protocol-agnostic security boundary
+
+The PolicyEngine and audit logger are evaluated and invoked at the router layer — above the adapter layer. A Modbus adapter, MQTT adapter, and any future BACnet or OPC-UA adapter all cross the same security boundary. The adapter has no knowledge of authorization; the router has no knowledge of the protocol. This is enforced by the import graph: `adapters/` imports from `domain/` but never from `policy/` or `auth/`.
+
+### WebSocket identity binding
+
+WebSocket connections receive a `TelemetrySession` at connect time that binds the subject identity and token expiry to the session. An `asyncio` expiry watcher task closes the connection with code 4001 when the JWT expires, triggering the frontend to refresh and reconnect. This prevents indefinite data access on a stale credential.
+
 ### Defense in depth on commands
 
-Every command is validated at three independent layers: the frontend (prevents obvious user errors), FastAPI (enforces authorization policy and payload constraints), and the simulator (drops malformed messages regardless of source). The simulator's layer exists to defend against any authenticated MQTT client that can reach the broker directly — broker-level ACLs are not yet enforced.
+Every command is validated at three independent layers: the frontend (prevents obvious user errors), FastAPI (enforces authorization policy and payload constraints), and the simulator (drops malformed messages regardless of source). The simulator's layer defends against any authenticated MQTT client that can reach the broker directly — broker-level per-topic ACLs are a planned hardening stage.
 
 ### MQTT service authentication
 
@@ -419,9 +528,7 @@ The MQTT broker (Mosquitto 2.0) runs with anonymous access disabled. Each servic
 | API | `basis-api` | Subscribe `basis/#`, publish `basis/hvac/+/command` |
 | Simulator | `basis-simulator` | Publish telemetry topics, subscribe `basis/hvac/+/command` |
 
-Credentials are stored in `infra/mosquitto/passwd` as PBKDF2-SHA512 hashes (`$7$` prefix, Mosquitto 2.0 format). The cleartext values are development-only defaults documented in `.env.example`. The `passwd` file is tracked in the repository so `docker compose up` works without any additional setup for contributors.
-
-This eliminates anonymous MQTT access within the Docker network. TLS on the MQTT port is a planned stage.
+Credentials are stored in `infra/mosquitto/passwd` as PBKDF2-SHA512 hashes. The cleartext values are development-only defaults documented in `.env.example`.
 
 ### Tokens in memory only
 
@@ -435,7 +542,7 @@ For a comprehensive walkthrough of the platform architecture — including domai
 
 ## Architecture Decision Records
 
-The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records documenting the reasoning behind the major architectural choices in BASIS. ADRs explain *why* decisions were made — including the alternatives considered and the trade-offs accepted.
+The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records documenting the reasoning behind major architectural choices in BASIS. ADRs explain *why* decisions were made — including the alternatives considered and the trade-offs accepted.
 
 | ADR | Decision |
 |-----|----------|
@@ -447,52 +554,64 @@ The [`docs/adr/`](docs/adr/) directory contains Architecture Decision Records do
 | [ADR-0006](docs/adr/ADR-0006-local-first-architecture.md) | Local-first, air-gap compatible deployment philosophy |
 | [ADR-0007](docs/adr/ADR-0007-wire-compatibility-during-refactors.md) | Preserve wire compatibility during internal refactors |
 | [ADR-0008](docs/adr/ADR-0008-no-kubernetes-dependency.md) | No Kubernetes dependency |
+| [ADR-0009](docs/adr/ADR-0009-protocol-agnostic-adapter-design.md) | Protocol-agnostic adapter design via `AdapterBase` |
 
 ---
 
 ## Current Limitations
 
-These are known gaps, not bugs. They represent the honest state of a Stage 6 PoC.
+These are known gaps, not bugs. They represent the honest state of a platform prototype.
 
-**Authentication and authorization**
-- The WebSocket endpoint (`/ws/telemetry`) is currently unauthenticated. Any client that can reach port 8000 can receive telemetry. Token validation on the WebSocket handshake is planned for Stage 7.
-- Token expiry is not handled on existing WebSocket connections — if a token expires mid-session, the WebSocket continues to stream until the page is reloaded.
+**Transport security**
 
-**MQTT security**
-- Mosquitto requires per-service credentials. Anonymous access is disabled. The API and simulator authenticate as distinct MQTT identities.
-- There is no TLS on the MQTT port. All MQTT traffic is plaintext on the Docker bridge network. This is acceptable for local development but not for any networked environment.
-- There are no per-topic ACLs enforced at the broker level. Any authenticated MQTT client could publish or subscribe to any `basis/#` topic. ACL enforcement is a planned stage.
+- There is no TLS on the MQTT port. All MQTT traffic is plaintext on the Docker bridge network. This is acceptable for local development but not for any networked deployment.
+- All HTTP and WebSocket traffic is unencrypted. No HTTPS, no WSS. A TLS-terminating reverse proxy is the standard approach before any exposure beyond localhost.
 
-**Persistence**
+**MQTT access control**
+
+- There are no per-topic ACLs enforced at the broker level. Any authenticated MQTT client could publish or subscribe to any `basis/#` topic. Broker-level ACL enforcement is a planned hardening stage.
+
+**Modbus adapter**
+
+- The Modbus TCP adapter is a simulation — it manages an in-memory register bank, not a real TCP socket. It validates the authorization and audit path, not the fieldbus driver. A real Modbus TCP implementation would replace `registers.py` and `adapter.py`; the router and security path would remain unchanged.
+
+**Infrastructure**
+
 - Keycloak uses an H2 in-memory database (`dev-file` mode). User configuration is lost if the container is replaced without a volume backup. The realm is re-imported from `realm-export.json` on each fresh start.
-- Audit events (authorization decisions and command dispatches) are written to stdout in a structured single-line format. They are not persisted to a queryable store. Retrieve them with `docker compose logs api | grep AUDIT` while the container is running. A SQLite-backed audit store is a planned stage.
+- All services are single instances. There is no high availability, horizontal scaling, or graceful degradation.
+- No production Keycloak configuration (no PostgreSQL backend, no clustering, no SMTP).
 
 **Scope**
-- A single zone (`main`) is simulated. There is no multi-zone, multi-building, or multi-tenant model.
-- The simulator uses a simple random-walk model. It does not simulate device faults, communication loss, or sensor drift beyond Gaussian noise.
-- There is no support for command acknowledgement or delivery confirmation from the simulator back to the API.
 
-**Operations**
-- All services are single instances. There is no high availability, horizontal scaling, or graceful degradation.
-- No HTTPS. All traffic is plain HTTP and WS.
-- No production Keycloak configuration (no PostgreSQL backend, no clustering, no SMTP).
+- The HVAC simulator uses a single zone (`main`). The Modbus adapter adds a `plant` zone (chiller-1, pump-1). There is no multi-building, multi-floor, or multi-tenant resource model.
+- Policy is role-based but not zone-scoped. An operator can issue commands to any resource regardless of zone. Zone-scoped policy grants are a natural next step given the existing resource model.
+- The simulator uses a simple random-walk and drift model. It does not simulate device faults, communication loss, or sensor failures.
+- There is no support for command acknowledgement or delivery confirmation from the simulator back to the API.
 
 ---
 
 ## Roadmap
 
-Completed stages are marked ✅. Planned stages reflect intended direction, not committed scope.
+All implemented stages are marked ✅. Potential directions reflect architectural possibilities, not committed scope.
 
-| Stage | Goal | Key deliverables | Status |
-|---|---|---|---|
-| **Stage 5** | Audit logging | Structured stdout audit events for authorization decisions and command dispatches. `AuditEvent` domain model. `/api/audit` endpoint (admin only, returns 501 with grep instructions pending a persistent store). | ✅ Complete |
-| **Stage 6** | MQTT security | Mosquitto anonymous access disabled. Per-service credentials (`basis-api`, `basis-simulator`). `adapters/mqtt/` package refactor. | ✅ Complete |
-| **Stage 7** | WebSocket authentication | Token validation on WebSocket handshake. Token expiry handling on live connections. | Planned |
-| **Stage 8** | Multi-zone support | Zone registry. Multiple simulated zones. Scoped commands (`basis/hvac/{zone}/command`). Zone-level role grants. | Planned |
-| **Stage 9** | Production hardening | Keycloak with PostgreSQL backend. HTTPS via reverse proxy. TLS on MQTT. Production Compose overrides. Secrets management baseline. | Planned |
-| **Stage 10** | Real device integration | BACnet/IP or Modbus TCP adapter alongside the simulator. Read real sensor data. Gate real actuator commands behind the same auth layer. | Planned |
-
-Basis Foundation does not currently have a target deployment architecture for production. The intent is to validate the identity and authorization model at the application level before introducing infrastructure complexity.
+| Stage | Goal | Status |
+|---|---|---|
+| **Stage 1** | Local dev environment — Docker Compose, all services wired | ✅ Complete |
+| **Stage 2** | OIDC authentication — Keycloak realm, PKCE browser flow, JWT validation | ✅ Complete |
+| **Stage 3** | Live telemetry — MQTT subscriber, WebSocket broadcaster, snapshot cache | ✅ Complete |
+| **Stage 4** | Role-gated commands — HVAC setpoint, role checks, multi-layer validation | ✅ Complete |
+| **Stage 5** | Audit logging — `AuditEvent` model, structured stdout, `/api/audit` endpoint | ✅ Complete |
+| **Stage 5b** | SQLite audit persistence — `SqliteAuditStore`, `DualAuditStore`, queryable API with filters | ✅ Complete |
+| **Stage 6** | MQTT security — per-service credentials, anonymous access disabled, `adapters/mqtt/` refactor | ✅ Complete |
+| **Stage 7** | Identity-aware policy architecture — `Subject` model, `PolicyEngine`, `RoleBasedPolicy`, `require_action()` replaces `require_role()` | ✅ Complete |
+| **Stage 7b** | Normalized event models — `TelemetryEvent` and `CommandEvent` as internal canonical representations | ✅ Complete |
+| **Stage 8** | Resource model — typed `Resource` objects, static registry, `GET /api/resources`, registry-driven zone validation | ✅ Complete |
+| **Stage 9** | Authenticated telemetry gateway — WebSocket JWT auth, `TelemetrySession`, SUBSCRIBE/DISCONNECT audit, token expiry (close 4001) | ✅ Complete |
+| **Stage 10** | Protocol-agnostic adapter PoC — `AdapterBase`, `MqttAdapter`, `ModbusTcpAdapter`, Modbus command endpoints, adapter registry in `main.py` | ✅ Complete |
+| **Stage 11** | Zone-scoped policy — Resource-aware `PolicyEngine` evaluation; per-zone role grants without modifying `RoleBasedPolicy` | Potential direction |
+| **Stage 12** | Real device integration — Replace `ModbusTcpAdapter` simulation with a real Modbus TCP socket; adapter contract unchanged | Potential direction |
+| **Stage 13** | MQTT per-topic ACLs — Broker-level ACL enforcement to complement API-layer authorization | Potential direction |
+| **Stage 14** | Production hardening — TLS on MQTT, HTTPS via reverse proxy, PostgreSQL-backed Keycloak, secrets management baseline | Potential direction |
 
 ---
 
@@ -508,8 +627,20 @@ basis-poc/
 ├── README.md
 │
 ├── docs/
-│   ├── platform-architecture.md   # Architectural direction and domain model
-│   └── screenshots/               # UI screenshots for README
+│   ├── architecture/
+│   │   └── overview.md             # Comprehensive platform architecture walkthrough
+│   ├── adr/
+│   │   ├── README.md               # ADR index
+│   │   ├── ADR-0001-modular-monolith-architecture.md
+│   │   ├── ADR-0002-sqlite-audit-persistence.md
+│   │   ├── ADR-0003-mqtt-as-transport-layer.md
+│   │   ├── ADR-0004-action-based-authorization.md
+│   │   ├── ADR-0005-subject-resource-event-normalization.md
+│   │   ├── ADR-0006-local-first-architecture.md
+│   │   ├── ADR-0007-wire-compatibility-during-refactors.md
+│   │   ├── ADR-0008-no-kubernetes-dependency.md
+│   │   └── ADR-0009-protocol-agnostic-adapter-design.md
+│   └── screenshots/                # UI screenshots for README
 │
 ├── infra/
 │   ├── keycloak/
@@ -519,46 +650,61 @@ basis-poc/
 │       └── passwd                  # PBKDF2-SHA512 hashed service credentials
 │
 └── services/
-    ├── api/                        # FastAPI backend
+    ├── api/                        # FastAPI control plane
     │   ├── Dockerfile
     │   ├── requirements.txt
-    │   ├── main.py                 # App factory, lifecycle, public routes
-    │   ├── auth.py                 # JWKS fetch, JWT validation, require_role() + audit
-    │   ├── ws_manager.py           # WebSocket broadcaster — snapshot + fan-out
-    │   ├── mqtt_client.py          # Compatibility shim → adapters/mqtt/subscriber
-    │   ├── mqtt_publisher.py       # Compatibility shim → adapters/mqtt/publisher
-    │   ├── adapters/               # External system adapters
-    │   │   ├── base.py             # AdapterBase ABC
-    │   │   └── mqtt/
-    │   │       ├── topics.py       # Single source of truth for MQTT topic strings
-    │   │       ├── subscriber.py   # aiomqtt subscriber — authenticated, background task
-    │   │       └── publisher.py    # paho publish.single() — authenticated, fire-and-forget
-    │   ├── audit/                  # Audit infrastructure
-    │   │   ├── store.py            # AuditStore ABC + StdoutAuditStore
-    │   │   └── logger.py           # AuditLogger facade — never raises on write failure
+    │   ├── main.py                 # App factory, adapter registry, lifecycle hooks
+    │   ├── auth.py                 # JWKS fetch, JWT validation, require_action()
+    │   ├── ws_manager.py           # WebSocket broadcaster — session-aware, snapshot + fan-out
+    │   │
+    │   ├── adapters/               # OT protocol adapters
+    │   │   ├── base.py             # AdapterBase ABC — start()/stop() lifecycle contract
+    │   │   ├── mqtt/
+    │   │   │   ├── subscriber.py   # MqttAdapter(AdapterBase) — aiomqtt, authenticated
+    │   │   │   ├── publisher.py    # paho publish.single() — authenticated, fire-and-forget
+    │   │   │   └── topics.py       # MQTT topic constants and TOPIC_TO_RESOURCE mapping
+    │   │   └── modbus/
+    │   │       ├── adapter.py      # ModbusTcpAdapter(AdapterBase) — 10s telemetry loop
+    │   │       └── registers.py    # ModbusRegisterBank — holding + input register simulation
+    │   │
+    │   ├── audit/                  # Audit persistence
+    │   │   ├── __init__.py         # DualAuditStore singleton, initialize_audit_db()
+    │   │   └── store.py            # StdoutAuditStore, SqliteAuditStore, DualAuditStore
+    │   │
     │   ├── domain/                 # Pure domain models — no I/O, no FastAPI imports
-    │   │   └── events.py           # AuditEvent Pydantic model
+    │   │   ├── events.py           # AuditEvent, TelemetryEvent, CommandEvent
+    │   │   ├── subject.py          # Subject model, SubjectType enum
+    │   │   ├── resource.py         # Resource model, ResourceType, static registry
+    │   │   └── session.py          # TelemetrySession — identity-bound, frozen, expiry hook
+    │   │
+    │   ├── policy/                 # Authorization policy layer
+    │   │   ├── actions.py          # Named action constants (stable identifiers)
+    │   │   ├── engine.py           # PolicyEngine — chain-of-responsibility evaluator
+    │   │   └── rbac.py             # RoleBasedPolicy — action → role table
+    │   │
     │   └── routers/
     │       ├── protected.py        # /api/me, /api/viewer, /api/operator, /api/admin
-    │       ├── telemetry.py        # /ws/telemetry — WebSocket endpoint
+    │       ├── telemetry.py        # /ws/telemetry — authenticated WebSocket endpoint
     │       ├── controls.py         # /api/controls/hvac/{zone}/setpoint
-    │       └── audit.py            # /api/audit — admin only, returns 501 (stdout store)
+    │       ├── modbus.py           # /api/controls/modbus/{device}/{action}
+    │       ├── audit.py            # /api/audit — admin only, SQLite-backed, filterable
+    │       └── resources.py        # /api/resources — OT resource registry
     │
-    ├── frontend/                   # React + Vite SPA
+    ├── frontend/                   # React + Vite operator console
     │   ├── Dockerfile
     │   ├── package.json
     │   ├── vite.config.js
     │   ├── index.html
     │   └── src/
-    │       ├── App.jsx             # Root — auth state, telemetry state, layout
+    │       ├── App.jsx             # Root — auth state, telemetry hook, layout
     │       ├── auth/
     │       │   └── keycloak.js     # Keycloak singleton, initKeycloak(), hasRole()
     │       ├── api/
-    │       │   └── client.js       # apiFetch() — token refresh + Bearer header
+    │       │   └── client.js       # apiFetch() — token refresh + Bearer header injection
     │       ├── ws/
-    │       │   └── telemetry.js    # useTelemetry() — WebSocket hook, reconnect backoff
+    │       │   └── telemetry.js    # useTelemetry() — authenticated WS, 4001 expiry handling
     │       └── components/
-    │           ├── TelemetryDashboard.jsx  # HVAC, CO2, Occupancy cards
+    │           ├── TelemetryDashboard.jsx  # HVAC, CO₂, occupancy, Modbus cards + WS status
     │           └── ControlPanel.jsx        # Setpoint slider — gated by hasRole()
     │
     └── simulator/                  # OT device simulator
@@ -567,13 +713,3 @@ basis-poc/
         └── simulator.py            # HVACSimulator, CO2Simulator, OccupancySimulator
                                     # Authenticated MQTT — subscribes to basis/hvac/+/command
 ```
-
----
-
-## Development Notes
-
-This repository is structured for local development clarity, not for production deployment. The service boundaries are intentionally coarse — the API is a monolith, the simulator is a single process, and all configuration is in environment variables rather than a secrets manager.
-
-The primary value of this PoC is demonstrating the **identity model** and **authorization enforcement pattern** at the application layer. Infrastructure concerns (HA, TLS, secrets, deployment) are deliberately deferred.
-
-Contributions and questions welcome. Open an issue before submitting significant structural changes.
