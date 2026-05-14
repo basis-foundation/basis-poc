@@ -31,6 +31,7 @@ import os
 import random
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
@@ -58,6 +59,40 @@ TOPIC_CMD_HVAC   = "basis/hvac/+/command"   # wildcard — matches any zone
 TEMP_MIN = 10.0   # must match API bounds
 TEMP_MAX = 35.0
 
+# ── Setpoint persistence ──────────────────────────────────────────────────────
+# Written whenever the setpoint changes; read on startup so a container restart
+# doesn't silently reset the target back to the default (21.0 °C).
+# Path is inside the mounted source volume so it survives `docker compose restart`.
+SETPOINT_FILE = Path(__file__).parent / ".setpoint_state.json"
+
+
+def _load_persisted_setpoint(zone: str, default: float) -> float:
+    """Return the last persisted setpoint for this zone, or *default*."""
+    try:
+        data = json.loads(SETPOINT_FILE.read_text())
+        val  = float(data.get(zone, default))
+        if TEMP_MIN <= val <= TEMP_MAX:
+            log.info("Loaded persisted setpoint for zone '%s': %.1f °C", zone, val)
+            return val
+    except Exception:
+        pass  # missing file or corrupt data — use the default
+    return default
+
+
+def _persist_setpoint(zone: str, value: float) -> None:
+    """Write the current setpoint to disk (best-effort; never raises)."""
+    try:
+        existing: dict = {}
+        if SETPOINT_FILE.exists():
+            try:
+                existing = json.loads(SETPOINT_FILE.read_text())
+            except Exception:
+                pass
+        existing[zone] = value
+        SETPOINT_FILE.write_text(json.dumps(existing))
+    except Exception as exc:
+        log.warning("Could not persist setpoint: %s", exc)
+
 
 # ── Simulator classes ─────────────────────────────────────────────────────────
 
@@ -66,13 +101,16 @@ class HVACSimulator:
     Single-zone HVAC simulator.
     target_temp can be updated at any time from the command callback.
     Python's GIL makes float assignment atomic — safe for cross-thread access.
+
+    Setpoint is persisted to SETPOINT_FILE on every change and loaded at
+    construction, so container restarts don't silently reset the target.
     """
     def __init__(self, zone: str = "main"):
         self.zone            = zone
         self.current_temp    = round(random.uniform(20.5, 23.5), 1)
-        self.target_temp     = 21.0
-        self.CORRECTION_RATE = 0.08
-        self.NOISE_SIGMA     = 0.15
+        self.target_temp     = _load_persisted_setpoint(zone, default=21.0)
+        self.CORRECTION_RATE = 0.12   # faster drift — more visible in demos
+        self.NOISE_SIGMA     = 0.10   # reduced noise for cleaner convergence
 
     def tick(self) -> dict:
         error = self.target_temp - self.current_temp
@@ -183,8 +221,9 @@ def _handle_hvac_command(state: dict, topic: str, command: dict) -> None:
         )
         return
 
-    old_temp     = hvac.target_temp
+    old_temp         = hvac.target_temp
     hvac.target_temp = new_temp
+    _persist_setpoint(zone, new_temp)   # survive container restarts
     requested_by = command.get("requested_by", "unknown")
     log.info(
         "✓ Setpoint updated: %.1f → %.1f °C  (zone=%s, requested_by=%s)",

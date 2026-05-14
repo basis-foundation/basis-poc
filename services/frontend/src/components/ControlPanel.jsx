@@ -41,11 +41,14 @@ const C = {
 }
 
 // ── Status feedback config ────────────────────────────────────────────────────
+// `text` may be a string or a function(result) → string for dynamic messages.
 const STATUS_CFG = {
   idle:     { color: C.muted,   text: '' },
   sending:  { color: C.accent,  text: 'Sending command…' },
-  sent:     { color: C.green,   text: '✓ Setpoint command sent — temperature will drift to target.' },
-  error:    { color: C.red,     text: '✗ Command failed. Check API logs.' },
+  sent:     { color: C.green,   text: (r) => `✓ Command sent — ${r?.data?.mqtt_topic ?? 'MQTT'} will deliver setpoint to simulator.` },
+  error:    { color: C.red,     text: (r) => r?.networkError
+    ? `✗ Network error — could not reach API. (${r.networkError})`
+    : `✗ Command failed (HTTP ${r?.status ?? '?'}). Check API logs.` },
   rejected: { color: C.red,     text: '✗ Access denied (403). This user does not have operator or admin role.' },
 }
 
@@ -113,6 +116,7 @@ export default function ControlPanel({ hvacData }) {
     currentSetpoint != null ? currentSetpoint : 21.0
   )
   const [cmdStatus, setCmdStatus] = useState('idle')
+  const [lastResult, setLastResult] = useState(null)
 
   if (!canControl) {
     return <LockedPanel currentSetpoint={currentSetpoint} />
@@ -121,12 +125,14 @@ export default function ControlPanel({ hvacData }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setCmdStatus('sending')
+    setLastResult(null)
 
     const result = await apiFetch('/api/controls/hvac/main/setpoint', {
       method: 'POST',
       body: JSON.stringify({ target_temperature: target }),
     })
 
+    setLastResult(result)
     if (result.ok) {
       setCmdStatus('sent')
     } else if (result.status === 403) {
@@ -135,12 +141,15 @@ export default function ControlPanel({ hvacData }) {
       setCmdStatus('error')
     }
 
-    // Auto-clear status after 4 seconds
-    setTimeout(() => setCmdStatus('idle'), 4000)
+    // Auto-clear status after 6 seconds (extra time to read error details)
+    setTimeout(() => setCmdStatus('idle'), 6000)
   }
 
   const isSending   = cmdStatus === 'sending'
   const statusCfg   = STATUS_CFG[cmdStatus]
+  const statusText  = typeof statusCfg.text === 'function'
+    ? statusCfg.text(lastResult)
+    : statusCfg.text
 
   // Colour the slider track based on temperature intent
   const sliderColor =
@@ -236,7 +245,7 @@ export default function ControlPanel({ hvacData }) {
             marginTop: '0.75rem', fontSize: '0.8rem',
             color: statusCfg.color, lineHeight: 1.5,
           }}>
-            {statusCfg.text}
+            {statusText}
           </div>
         )}
 
