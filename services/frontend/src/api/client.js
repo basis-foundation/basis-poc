@@ -8,7 +8,15 @@
  */
 import keycloak from '../auth/keycloak'
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Always use the page's own origin so REST calls go through Vite's /api proxy,
+// just as WebSocket connections go through Vite's /ws proxy. This keeps all
+// traffic on a single authenticated port (5173) — essential in Codespaces where
+// each forwarded port has its own tunnel auth cookie and direct cross-port fetches
+// produce "TypeError: Failed to fetch" (no cookie for the target port domain).
+//
+// VITE_API_URL is intentionally NOT used here for the same reason App.jsx uses
+// window.location.origin for WS_BASE_URL instead of VITE_API_URL.
+const API_BASE = window.location.origin
 
 /**
  * Make an authenticated API call.
