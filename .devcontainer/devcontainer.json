@@ -45,15 +45,16 @@
 
   "portsAttributes": {
     "5173": {
-      "label": "Operator Console (React)",
-      "onAutoForward": "openBrowser"
+      "label": "Operator Console",
+      "onAutoForward": "openBrowser",
+      "protocol": "http"
     },
     "8000": {
-      "label": "API / Swagger UI",
+      "label": "FastAPI",
       "onAutoForward": "silent"
     },
     "18080": {
-      "label": "Keycloak (Identity Provider)",
+      "label": "Keycloak",
       "onAutoForward": "silent"
     },
     "1883": {
@@ -61,7 +62,7 @@
       "onAutoForward": "silent"
     },
     "9001": {
-      "label": "MQTT over WebSocket",
+      "label": "MQTT WebSocket",
       "onAutoForward": "silent"
     }
   },

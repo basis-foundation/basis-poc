@@ -33,11 +33,17 @@ const NAV_GROUPS = [
     ],
   },
   {
+    label: 'Security',
+    items: [
+      { id: 'access-control', icon: '⊛', label: 'Access Control' },
+      { id: 'audit',          icon: '◑', label: 'Audit Trail', adminBadge: true },
+    ],
+  },
+  {
     label: 'Platform',
     items: [
-      { id: 'architecture',   icon: '◎', label: 'Architecture'   },
-      { id: 'access-control', icon: '⊛', label: 'Access Control' },
-      { id: 'identity',       icon: '◇', label: 'Identity'       },
+      { id: 'architecture', icon: '◎', label: 'Architecture' },
+      { id: 'identity',     icon: '◇', label: 'Identity'     },
     ],
   },
 ]
@@ -170,6 +176,17 @@ export default function Sidebar({ activeView, onNavigate, wsStatus, username, ro
                       opacity: 0.9,
                     }}>
                       {wsLabel.dot} {wsLabel.text}
+                    </span>
+                  )}
+                  {item.adminBadge && (
+                    <span style={{
+                      fontSize: '0.55rem',
+                      fontWeight: 700,
+                      color: C.purple,
+                      opacity: 0.85,
+                      letterSpacing: '0.03em',
+                    }}>
+                      admin
                     </span>
                   )}
                 </button>
