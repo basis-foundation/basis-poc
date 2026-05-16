@@ -35,8 +35,10 @@ The fastest way to explore BASIS is in a GitHub Codespace. No local Docker setup
 1. Log in as `bob` (operator). Watch live HVAC, CO₂, and occupancy telemetry arrive via WebSocket.
 2. Use the HVAC setpoint slider to issue a temperature command. Observe the temperature drift in the telemetry card.
 3. Log out. Log in as `alice` (viewer). The control panel is locked — a direct API call also returns 403.
-4. Log in as `carol` (admin). Navigate to `GET /api/audit` via the Swagger UI to inspect the audit trail for bob's command.
+4. Log out. Log in as `carol` (admin). Open the **Audit Trail** tab in the Operator Console sidebar. Every action bob and alice took — including alice's 403 — appears as a timestamped event with subject, action, resource, and outcome.
 5. Read `docs/architecture/overview.md` and `docs/adr/` for the architectural reasoning behind each design decision.
+
+> **Developer note:** The raw API is also browsable at `http://localhost:8000/docs` (Swagger UI). Protected endpoints require a Bearer token — paste one from your browser's dev tools Network tab. The Operator Console handles token injection automatically and is the recommended way to explore the platform.
 
 **Codespaces notes:**
 
@@ -587,9 +589,13 @@ mosquitto_sub -h localhost -p 1883 -u basis-api -P basis-api-secret -t 'basis/#'
 
 ### Troubleshooting
 
-**The Operator Console shows "Authentication failed" or a blank page**
+**The Operator Console shows "Services are starting, please wait…"**
 
-Keycloak may still be starting. The realm import takes 60–90 seconds. Check:
+This is normal on first launch. The console automatically retries connecting to Keycloak up to 8 times (5 seconds apart) while services initialize. Wait for the attempt counter to reach success — no action needed.
+
+**The Operator Console shows "Authentication Failed" after all retries**
+
+Keycloak may have taken longer than expected. Check:
 
 ```bash
 docker compose logs keycloak | tail -30

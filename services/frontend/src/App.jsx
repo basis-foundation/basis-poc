@@ -17,6 +17,7 @@ import Sidebar from './components/Sidebar'
 import ArchitectureView from './components/ArchitectureView'
 import AccessControlView from './components/AccessControlView'
 import IdentityView from './components/IdentityView'
+import AuditView from './components/AuditView'
 
 // ── WebSocket URL ──────────────────────────────────────────────────────────────
 // Always use the page's own origin so traffic routes through Vite's /ws proxy.
@@ -39,7 +40,8 @@ const C = {
 }
 
 // ── Loading / error screens ───────────────────────────────────────────────────
-function LoadingScreen() {
+function LoadingScreen({ attempt, maxAttempts }) {
+  const isRetrying = attempt > 1
   return (
     <div style={{
       minHeight: '100vh',
@@ -52,6 +54,21 @@ function LoadingScreen() {
       fontFamily: 'system-ui, sans-serif',
       color: C.text,
     }}>
+      {/* Logo */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '0.65rem', marginBottom: '0.25rem',
+      }}>
+        <div style={{
+          width: '34px', height: '34px',
+          background: 'linear-gradient(135deg, #1e3a6e 0%, #4a2d7c 100%)',
+          borderRadius: '8px',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '1rem',
+          boxShadow: '0 0 16px rgba(99,179,237,0.15)',
+        }}>⬡</div>
+        <span style={{ fontSize: '1.1rem', fontWeight: 800, letterSpacing: '0.08em' }}>BASIS</span>
+      </div>
+
       <div style={{
         width: '36px', height: '36px',
         border: `2px solid ${C.border}`,
@@ -59,14 +76,31 @@ function LoadingScreen() {
         borderRadius: '50%',
         animation: 'spin 1s linear infinite',
       }} />
-      <div>
-        <div style={{ fontSize: '0.9rem', fontWeight: 600, textAlign: 'center' }}>
-          Connecting to Keycloak…
+
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>
+          {isRetrying ? 'Services are starting, please wait…' : 'Connecting to Keycloak…'}
         </div>
-        <div style={{ fontSize: '0.78rem', color: C.muted, textAlign: 'center', marginTop: '0.25rem' }}>
-          Establishing authenticated session
+        <div style={{ fontSize: '0.78rem', color: C.muted, marginTop: '0.3rem' }}>
+          {isRetrying
+            ? `Attempt ${attempt} of ${maxAttempts} — containers may still be initializing`
+            : 'Establishing authenticated session'}
         </div>
       </div>
+
+      {isRetrying && (
+        <div style={{
+          padding: '0.5rem 1rem',
+          background: C.surface,
+          border: `1px solid ${C.border}`,
+          borderRadius: '6px',
+          fontSize: '0.73rem',
+          color: C.muted,
+        }}>
+          Keycloak typically takes 20–30 s on first boot
+        </div>
+      )}
+
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
@@ -94,8 +128,8 @@ function AuthErrorScreen() {
         fontSize: '0.82rem', color: C.muted,
         maxWidth: '440px', textAlign: 'center', lineHeight: 1.65,
       }}>
-        Could not connect to Keycloak. Make sure all services are running
-        and the Keycloak URL is reachable from your browser.
+        Could not connect to Keycloak after several attempts. Make sure all
+        services are running and the Keycloak URL is reachable from your browser.
       </div>
       <div style={{
         marginTop: '0.75rem',
@@ -109,6 +143,21 @@ function AuthErrorScreen() {
       }}>
         docker compose up --build
       </div>
+      <button
+        onClick={() => window.location.reload()}
+        style={{
+          marginTop: '0.25rem',
+          padding: '0.45rem 1.25rem',
+          background: 'transparent',
+          border: `1px solid ${C.border}`,
+          borderRadius: '6px',
+          color: C.accent,
+          fontSize: '0.78rem',
+          cursor: 'pointer',
+        }}
+      >
+        Retry
+      </button>
     </div>
   )
 }
@@ -179,6 +228,9 @@ export default function App() {
   const [endpointResults, setEndpointResults] = useState({
     viewer: null, operator: null, admin: null,
   })
+  const [retryAttempt, setRetryAttempt] = useState(1)
+  const MAX_RETRIES = 8
+  const RETRY_DELAY_MS = 5000
   const didInit = useRef(false)
 
   // Token accessors passed to the telemetry hook so each connect uses a fresh JWT.
@@ -189,16 +241,36 @@ export default function App() {
   // read from the same telemetry state object rather than opening separate sockets.
   const { telemetry, wsStatus } = useTelemetry(WS_BASE_URL, getToken, refreshToken)
 
-  // ── Keycloak init ─────────────────────────────────────────────────────────
+  // ── Keycloak init with startup retry ─────────────────────────────────────
+  // Codespaces: docker-proxy binds the port before Keycloak is ready, so the
+  // browser may open before services finish initialising. We retry up to
+  // MAX_RETRIES times with RETRY_DELAY_MS between attempts rather than
+  // immediately showing an error screen.
   useEffect(() => {
     if (didInit.current) return
     didInit.current = true
-    initKeycloak()
-      .then(authenticated => setAuthState(authenticated ? 'authenticated' : 'error'))
-      .catch(err => {
-        console.error('Keycloak init failed:', err)
-        setAuthState('error')
-      })
+
+    let attempt = 1
+
+    const tryInit = () => {
+      setRetryAttempt(attempt)
+      initKeycloak()
+        .then(authenticated => {
+          setAuthState(authenticated ? 'authenticated' : 'error')
+        })
+        .catch(err => {
+          console.warn(`Keycloak init attempt ${attempt} failed:`, err)
+          if (attempt < MAX_RETRIES) {
+            attempt++
+            setTimeout(tryInit, RETRY_DELAY_MS)
+          } else {
+            console.error('Keycloak init failed after max retries')
+            setAuthState('error')
+          }
+        })
+    }
+
+    tryInit()
   }, [])
 
   // ── Auto-test protected endpoints on login ────────────────────────────────
@@ -227,7 +299,7 @@ export default function App() {
   }, [authState])
 
   // ── Loading / error states ────────────────────────────────────────────────
-  if (authState === 'loading') return <LoadingScreen />
+  if (authState === 'loading') return <LoadingScreen attempt={retryAttempt} maxAttempts={MAX_RETRIES} />
   if (authState === 'error')   return <AuthErrorScreen />
 
   // ── Authenticated layout ──────────────────────────────────────────────────
@@ -292,6 +364,10 @@ export default function App() {
             meResult={meResult}
             keycloak={keycloak}
           />
+        )}
+
+        {activeView === 'audit' && (
+          <AuditView roles={roles} />
         )}
 
       </main>
