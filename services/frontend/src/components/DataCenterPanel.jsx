@@ -102,7 +102,6 @@ function RackTempCard({ racks }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
         {racks.map(rack => {
           const sc = statusColor(rack.status)
-          const pct = Math.min(100, Math.max(0, ((rack.inlet_temp_c - 18) / 16) * 100))
           const barColor = rack.status === 'critical' ? C.red : rack.status === 'warning' ? C.yellow : C.green
           return (
             <div key={rack.rack_id}>
