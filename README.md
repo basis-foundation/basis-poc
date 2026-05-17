@@ -32,9 +32,9 @@ The fastest way to explore BASIS is in a GitHub Codespace. No local Docker setup
 
 **5-minute demo walkthrough:**
 
-1. Log in as `bob` (operator). Watch live HVAC, CO₂, and occupancy telemetry arrive via WebSocket.
+1. Log in as `bob` (operator). Watch live HVAC, CO₂, and occupancy telemetry arrive via WebSocket. Scroll down on the Dashboard to see the **Data Center** section: rack inlet temperatures, hot/cold aisle thermals, CRAC cooling unit, PDU load, UPS battery state, and environmental sensors — all streaming live from the simulator.
 2. Use the HVAC setpoint slider to issue a temperature command. Observe the temperature drift in the telemetry card.
-3. Log out. Log in as `alice` (viewer). The control panel is locked — a direct API call also returns 403.
+3. Log out. Log in as `alice` (viewer). The control panel is locked — a direct API call also returns 403. The data center telemetry is still visible (telemetry is viewer-accessible), but no control actions are available.
 4. Log out. Log in as `carol` (admin). Open the **Audit Trail** tab in the Operator Console sidebar. Every action bob and alice took — including alice's 403 — appears as a timestamped event with subject, action, resource, and outcome.
 5. Read `docs/architecture/overview.md` and `docs/adr/` for the architectural reasoning behind each design decision.
 
@@ -285,15 +285,31 @@ sequenceDiagram
 
 ## Telemetry Flow
 
+### Data Center Telemetry
+
+The simulator also publishes a composite data center telemetry event every ~9 seconds on `basis/datacenter/dc-boise-01/telemetry`. The payload covers six subsystems in a single message:
+
+| Field group  | Key signals                                                        |
+| ------------ | ------------------------------------------------------------------ |
+| `racks[]`    | Per-rack inlet temperature + status (normal / warning / critical)  |
+| `thermal`    | Cold aisle temp, hot aisle temp, ΔT                                |
+| `cooling`    | CRAC unit mode, fan speed %, supply/return air temps               |
+| `power`      | PDU load %, kW draw, status (normal / warning / overload)          |
+| `ups`        | Battery %, runtime, utility power state, status                    |
+| `environment`| Humidity %, leak detected, smoke detected                          |
+
+This demonstrates why BASIS matters for AI-era infrastructure: GPU clusters and edge inference nodes are dense, high-power, thermally critical systems. An unauthorized command to a CRAC unit or PDU — without identity verification or audit — can cascade into rack shutdowns. BASIS gates every such action through the same `require_action()` policy path used for HVAC, producing a verifiable audit record of every control decision.
+
 ### MQTT Telemetry (HVAC, CO₂, Occupancy)
 
 MQTT topics follow the pattern `basis/{system}/{zone}/{message-type}`:
 
-| Topic                               | Publisher | Cadence | Key payload fields                                                    |
-| ----------------------------------- | --------- | ------- | --------------------------------------------------------------------- |
-| `basis/hvac/main/telemetry`         | Simulator | 3 s     | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed` |
-| `basis/sensors/co2/telemetry`       | Simulator | 6 s     | `co2_level`, `unit`, `status`                                         |
-| `basis/sensors/occupancy/telemetry` | Simulator | 12 s    | `occupancy_status`, `occupant_count`                                  |
+| Topic                                      | Publisher | Cadence | Key payload fields                                                    |
+| ------------------------------------------ | --------- | ------- | --------------------------------------------------------------------- |
+| `basis/hvac/main/telemetry`                | Simulator | 3 s     | `current_temperature`, `target_temperature`, `hvac_mode`, `fan_speed` |
+| `basis/sensors/co2/telemetry`              | Simulator | 6 s     | `co2_level`, `unit`, `status`                                         |
+| `basis/sensors/occupancy/telemetry`        | Simulator | 12 s    | `occupancy_status`, `occupant_count`                                  |
+| `basis/datacenter/dc-boise-01/telemetry`   | Simulator | 9 s     | `racks[]`, `thermal{}`, `cooling{}`, `power{}`, `ups{}`, `environment{}` |
 
 ### Modbus Telemetry (Chiller, Pump)
 
