@@ -12,9 +12,10 @@ Any change here must be reflected in services/simulator/simulator.py.
 """
 
 # ── Telemetry topics (Simulator → Broker → API) ───────────────────────────────
-TELEMETRY_HVAC      = "basis/hvac/main/telemetry"
-TELEMETRY_CO2       = "basis/sensors/co2/telemetry"
-TELEMETRY_OCCUPANCY = "basis/sensors/occupancy/telemetry"
+TELEMETRY_HVAC        = "basis/hvac/main/telemetry"
+TELEMETRY_CO2         = "basis/sensors/co2/telemetry"
+TELEMETRY_OCCUPANCY   = "basis/sensors/occupancy/telemetry"
+TELEMETRY_DATACENTER  = "basis/datacenter/dc-boise-01/telemetry"
 
 # ── Command topics (API → Broker → Simulator) ─────────────────────────────────
 # Use command_topic() to construct per-zone command topics.
@@ -32,6 +33,7 @@ KNOWN_TOPICS = {
     TELEMETRY_HVAC,
     TELEMETRY_CO2,
     TELEMETRY_OCCUPANCY,
+    TELEMETRY_DATACENTER,
     SIMULATOR_STATUS,
     SIMULATOR_HEARTBEAT,
 }
@@ -45,9 +47,10 @@ KNOWN_TOPICS = {
 # Only telemetry topics are listed — command and simulator metadata topics
 # are not resource-bearing in the context of TelemetryEvent construction.
 TOPIC_TO_RESOURCE: dict[str, str] = {
-    TELEMETRY_HVAC:      "hvac:main",
-    TELEMETRY_CO2:       "sensor:co2",
-    TELEMETRY_OCCUPANCY: "sensor:occupancy",
+    TELEMETRY_HVAC:       "hvac:main",
+    TELEMETRY_CO2:        "sensor:co2",
+    TELEMETRY_OCCUPANCY:  "sensor:occupancy",
+    TELEMETRY_DATACENTER: "datacenter:dc-boise-01",
 }
 
 

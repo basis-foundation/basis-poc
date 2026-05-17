@@ -4,10 +4,13 @@
  * so ControlPanel can share the same WebSocket data without a second connection).
  */
 
+import DataCenterPanel from './DataCenterPanel'
+
 // ── Constants ─────────────────────────────────────────────────────────────────
-export const TOPIC_HVAC      = 'basis/hvac/main/telemetry'
-export const TOPIC_CO2       = 'basis/sensors/co2/telemetry'
-export const TOPIC_OCCUPANCY = 'basis/sensors/occupancy/telemetry'
+export const TOPIC_HVAC        = 'basis/hvac/main/telemetry'
+export const TOPIC_CO2         = 'basis/sensors/co2/telemetry'
+export const TOPIC_OCCUPANCY   = 'basis/sensors/occupancy/telemetry'
+export const TOPIC_DATACENTER  = 'basis/datacenter/dc-boise-01/telemetry'
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 const C = {
@@ -265,9 +268,10 @@ function WSStatusPill({ status }) {
 // telemetry and wsStatus are now passed as props from App.jsx, which owns the
 // single useTelemetry() call so ControlPanel can share the same data.
 export default function TelemetryDashboard({ telemetry, wsStatus }) {
-  const hvac      = telemetry[TOPIC_HVAC]
-  const co2       = telemetry[TOPIC_CO2]
-  const occupancy = telemetry[TOPIC_OCCUPANCY]
+  const hvac        = telemetry[TOPIC_HVAC]
+  const co2         = telemetry[TOPIC_CO2]
+  const occupancy   = telemetry[TOPIC_OCCUPANCY]
+  const datacenter  = telemetry[TOPIC_DATACENTER] ?? null
 
   return (
     <section>
@@ -280,12 +284,12 @@ export default function TelemetryDashboard({ telemetry, wsStatus }) {
           fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase',
           letterSpacing: '0.08em', color: C.muted,
         }}>
-          Live Telemetry — Main Zone
+          Live Telemetry — Building Systems
         </div>
         <WSStatusPill status={wsStatus} />
       </div>
 
-      {/* Sensor cards */}
+      {/* Building / HVAC sensor cards */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(3, 1fr)',
@@ -295,6 +299,9 @@ export default function TelemetryDashboard({ telemetry, wsStatus }) {
         <CO2Card       data={co2}       />
         <OccupancyCard data={occupancy} />
       </div>
+
+      {/* Data center telemetry — separate section below */}
+      <DataCenterPanel data={datacenter} />
 
       {/* Pulse animation */}
       <style>{`
